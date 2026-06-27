@@ -1,0 +1,22 @@
+/*
+ * AE2-ES GameTest Suite Dependencies
+ *
+ * This test suite validates AE2-ES against real AE2, GregTech, and
+ * OpenComputers mod blocks using the Horizon-QA GameTest framework.
+ *
+ * All dependencies are compileOnly — the Forge server provides them
+ * at runtime when tests execute inside the Horizon-QA test runner.
+ */
+dependencies {
+    // Horizon-QA GameTest framework (the test runner and API)
+    compileOnly('com.github.GTNewHorizons:Horizon-QA:0.6.0:dev')
+
+    // GregTech — for machine states, maintenance, recipes, EU
+    compileOnly('com.github.GTNewHorizons:GT5-Unofficial:5.09.52.482:dev')
+
+    // AE2 — for network interfaces, controllers, storage buses
+    compileOnly('com.github.GTNewHorizons:Applied-Energistics-2-Unofficial:rv3-beta-922-GTNH:dev')
+
+    // OpenComputers — for computer blocks, modems, transposers, redstone I/O
+    compileOnly('com.github.GTNewHorizons:OpenComputers:1.10.36-GTNH:dev')
+}
