@@ -139,11 +139,18 @@ function ConfigUI.new(configPath, options)
     _detectedComponents = nil,
 
     -- Running flag
-    _running      = true,
+      _running      = true,
+      _logger       = nil,
   }, ConfigUI)
 
   -- Detect I/O mode
   self:_detectIO()
+
+  -- Initialize logger if available
+  local ok, BrokerLogger = pcall(require, "src.broker_logger")
+  if ok and BrokerLogger and BrokerLogger.new then
+    self._logger = BrokerLogger.new("config_ui")
+  end
 
   return self
 end
@@ -1786,6 +1793,7 @@ end
 -- If not, run the first-run setup wizard.
 -- @return table or nil  final config, or nil if cancelled
 function ConfigUI:run()
+  if self._logger then self._logger:info("Config UI started") end
   -- Try to load existing config
   local cfg, err = self:loadConfig()
 
