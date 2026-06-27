@@ -242,6 +242,14 @@ end
 -- @return number (side constant) or nil if role unknown
 function HAL:resolveSide(role)
   local side = self._sideMap[role]
+  -- Fallbacks for renamed roles (itemBuffer → centralBuffer and vice versa)
+  if side == nil and role == "itemBuffer" then
+    side = self._sideMap["centralBuffer"]
+  elseif side == nil and role == "fluidBuffer" then
+    side = self._sideMap["centralBuffer"]  -- same physical side historically
+  elseif side == nil and role == "centralBuffer" then
+    side = self._sideMap["itemBuffer"]
+  end
   if side == nil then
     self._lastError = "HAL:resolveSide() — unknown role '" .. tostring(role) .. "'"
     return nil
