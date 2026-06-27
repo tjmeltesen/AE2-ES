@@ -142,20 +142,20 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Set up Java (JDK 8 for GTNH 1.7.10)
+      - name: Set up JDK 8 (for Minecraft 1.7.10 compilation)
         uses: actions/setup-java@v4
         with:
           java-version: "8"
           distribution: "temurin"
 
-      - name: Build GameTest project (compilation check)
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "7.6"
+
+      - name: Compile GameTest project
         working-directory: gametest
-        run: |
-          # Generate Gradle wrapper if not present
-          if [ ! -f gradlew ]; then
-            gradle wrapper --gradle-version 8.5
-          fi
-          ./gradlew compileJava --no-daemon --stacktrace
+        run: ./gradlew compileJava --no-daemon --stacktrace
 
       - name: Archive build output
         if: always()
