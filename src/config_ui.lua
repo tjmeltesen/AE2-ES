@@ -210,14 +210,14 @@ end
 
 --- Clear the screen.
 function ConfigUI:_clear()
+  -- Always print some newlines for terminal fallback
+  print("\n\n\n")
+  -- Try GPU term clear
   if self._term then
-    self._term.clear()
+    pcall(self._term.clear)
     if self._term.setCursor then
-      self._term.setCursor(1, 1)
+      pcall(self._term.setCursor, 1, 1)
     end
-  else
-    -- Fallback: print blank lines
-    for _ = 1, 3 do print("") end
   end
 end
 
@@ -256,14 +256,14 @@ end
 -- @param fg     number  optional foreground color
 -- @param bg     number  optional background color
 function ConfigUI:_writeAt(x, y, text, fg, bg)
+  -- Always print as terminal fallback first (safe)
+  print(text)
+  -- Then try GPU rendering
   if self._gpu and self._gpu.set then
     if fg then self:_setFG(fg) end
     if bg then self:_setBG(bg) end
     pcall(self._gpu.set, self._gpu, x, y, text)
     self:_resetColor()
-  else
-    -- Terminal fallback: just print
-    print(text)
   end
 end
 
