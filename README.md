@@ -14,8 +14,9 @@ A decoupled, two-part MES-like system for GTNH (GregTech New Horizons) that coup
 6. [Specification Verification Matrix](#specification-verification-matrix)
 7. [Testing](#testing)
 8. [CI/CD Pipeline](#cicd-pipeline)
-9. [Deliverables Summary](#deliverables-summary)
-10. [Known Gaps & TODOs](#known-gaps--todos)
+9. [Horizon-QA GameTest Suite](#horizon-qa-gametest-suite)
+10. [Deliverables Summary](#deliverables-summary)
+11. [Known Gaps](#known-gaps)
 
 ---
 
@@ -26,7 +27,7 @@ AE2-ES is a manufacturing execution system designed for GTNH factories. It split
 - **Exec Broker** — Subnet controller managing a localized machine array (e.g., 4 Large Chemical Reactors). Operates on an isolated AE2 subnet with a 6-phase state machine.
 - **Supervisor** — Central coordinator aggregating telemetry from all brokers, tracking global resource depletion (TTD), and providing a real-time dashboard.
 
-The system is designed for cooperative multitasking (OC's single-threaded Lua environment), fire-and-forget telemetry, and Just-In-Time database allocation to minimize GC pressure.
+The system is designed for cooperative multitasking (OC's single-threaded Lua environment), fire-and-forget telemetry, and Just-In-Time database allocation to minimize GC pressure. Interactive config UIs on both broker and supervisor eliminate the need to edit Lua files for component address setup.
 
 ---
 
@@ -40,6 +41,7 @@ The system is designed for cooperative multitasking (OC's single-threaded Lua en
 │  - TTD (Time-to-Depletion) tracking      │
 │  - Inter-broker coordination             │
 │  - Central dashboard UI                  │
+│  - Interactive config UI (B7)            │
 └──────────┬──────────────────────────────┘
            │ modem broadcasts (fire-and-forget)
     ┌──────┼──────┬──────────────┐
@@ -49,6 +51,7 @@ The system is designed for cooperative multitasking (OC's single-threaded Lua en
 │Broker││Broker││Broker│...│Broker│
 └──────┘└──────┘└──────┘   └──────┘
   (subnet controller — localized machine array)
+  Each has an interactive config UI (A13)
 ```
 
 ### Exec Broker: 6-Phase State Machine
@@ -70,55 +73,99 @@ BUFFERING → LOGGING → ALLOCATING → TRANSFERRING → PROCESSING → CLEANUP
 Listen → Deserialize → FIFO Queue → Index Matrix → Evaluate → Update UI
 ```
 
+### Testing Tiers
+
+```
+Tier 1 (lupa) → Tier 2 (Integration) → Tier 3 (Soak)
+     │                  │                    │
+     ▼                  ▼                    ▼
+  Lua unit tests    Horizon-QA         5x soak cycles
+  (every push)      (gametest/ +       + GC leak check
+                     horizon-qa/)      (nightly cron)
+```
+
 ---
 
 ## File Structure
 
 ```
 AE2-ES/
-├── README.md                          # This file
-├── .github/workflows/ae2-es-ci.yml    # C6: CI/CD Pipeline (Tier 1/2/3) — pending C6 completion
+├── README.md
+├── .github/workflows/ae2-es-ci.yml    # 3-tier CI/CD Pipeline
 │
 ├── src/                               # Exec Broker core modules
 │   ├── exec_broker.lua                # A8: Main event loop (925 lines)
-│   ├── buffersnapshot.lua             # A3: Buffer checksum & debounce (112 lines)
-│   ├── hal.lua                        # A5: Hardware Abstraction Layer (734 lines)
-│   ├── jobmanifest.lua                # A1 (src): JIT-allocated job manifest (179 lines)
-│   ├── telemetrypayload.lua           # A7: Serialization envelope (199 lines)
-│   ├── timeslicescheduler.lua         # A11: Cooperative multitasking (339 lines)
-│   └── supervisor.lua                 # B1-B6: Supervisor coordinator (610 lines)
+│   ├── buffersnapshot.lua             # A3: Buffer checksum & debounce
+│   ├── hal.lua                        # A5: Hardware Abstraction Layer
+│   ├── jobmanifest.lua                # A1: JIT-allocated job manifest
+│   ├── MachineNode.lua                # A2: Machine abstraction (standalone)
+│   ├── profiler.lua                   # C8: Runtime performance profiler
+│   ├── telemetrypayload.lua           # A7: Serialization envelope
+│   ├── timeslicescheduler.lua         # A11: Cooperative multitasking
+│   ├── config_ui.lua                  # A13: Exec Broker config UI
+│   └── supervisor.lua                 # Supervisor coordinator
+│
+├── src/ui/
+│   └── common.lua                     # Shared UI components (menus, dialogs)
 │
 ├── supervisor/                        # Supervisor sub-modules
-│   ├── modem_subscriber.lua           # B1: Modem event loop (362 lines)
-│   └── ui/dashboard.lua               # B5: Dashboard UI (1140 lines)
+│   ├── config_ui.lua                  # B7: Supervisor config UI
+│   ├── modem_subscriber.lua           # B1: Modem event loop
+│   └── ui/dashboard.lua               # B5: Dashboard UI
 │
-├── exec_broker/                       # Broker sub-modules
-│   └── maintenance_report.lua         # A6: Fault diagnostics (297 lines)
+├── exec_broker/
+│   └── maintenance_report.lua         # A6: Fault diagnostics
 │
-├── JobManifest.lua                    # A1 (root): 6-phase state machine (221 lines)
-├── JobManifest_test.lua               # A1 unit tests (468 lines)
-├── MaintenanceReport.lua              # A6 (root): Fault reporting (350 lines)
-├── MaintenanceReport_test.lua         # A6 unit tests (468 lines)
-├── ttd_tracker.lua                    # B3: TTD rate monitoring (804 lines)
-├── ttd_tracker_test.lua               # B3 unit tests (1166 lines)
+├── gametest/                          # C7-R: Horizon-QA Java GameTest project
+│   ├── build.gradle.kts               # Gradle build config
+│   ├── STRUCTURES.md                  # Test structure build guide
+│   └── src/main/java/com/ae2es/gametest/
+│       ├── GameTestSuite.java         # Aggregate suite runner
+│       ├── ModemBroadcastTest.java    # 4-broker modem topology
+│       ├── TransposerTransferTest.java # Item transfer validation
+│       ├── MaintenanceFaultTest.java  # GT maintenance detection
+│       ├── DebounceWindowTest.java    # BufferSnapshot stability
+│       └── GhostItemTest.java         # Ghost-item detection
 │
-├── run_tests.py                       # Python test runner
-├── run_dashboard_tests.py             # Dashboard-specific test runner
+├── horizon-qa/                        # C9: Horizon-QA Lua test harness
+│   ├── runner.lua                     # Test discovery & execution
+│   ├── json_writer.lua                # JUnit XML output
+│   ├── run_tier2.sh / run_tier2.py    # CI runners
+│   └── tests/                         # 6 Lua test scenarios
+│
+├── JobManifest.lua                    # A1: 6-phase state machine
+├── JobManifest_test.lua               # A1 unit tests
+├── JobQueue.lua                       # A4: Bounded FIFO job queue
+├── JobQueue_test.lua                  # A4 unit tests
+├── MaintenanceReport.lua              # A6: Fault reporting
+├── MaintenanceReport_test.lua         # A6 unit tests
+├── ttd_tracker.lua                    # B3: TTD rate monitoring
+├── ttd_tracker_test.lua               # B3 unit tests
+│
+├── run_tests.py                       # Python/lupa test runner
+├── run_dashboard_tests.py             # Dashboard test runner
+├── run_tier2.py                       # Tier 2 integration runner
 │
 └── tests/                             # Test suite (Deliverable C)
-    ├── run_tests.lua                  # Test discovery/runner
-    ├── test_state_transitions.lua     # C1: State transition tests (rewritten, PR #14)
-    ├── test_telemetry_serialization.lua  # C2: JIT DB + serialization
-    ├── test_jit_db_cleanup.lua        # C2: JIT table cleanup validation
-    ├── test_malformed_payload.lua     # C2: Error handling / malformed input
-    ├── test_integration.lua           # C3: Modem/HAL/fault integration (729 lines)
-    ├── test_soak.lua                  # C4: 1K micro-job soak test (573 lines)
-    ├── test_timeslicescheduler.lua    # C5: Performance profiling (715 lines)
-    ├── unit/test_dashboard.lua        # B5: Dashboard unit tests (1114 lines)
+    ├── run_tests.lua                  # Lua-native test discovery
+    ├── run_tier2.lua                  # Tier 2 Lua runner
+    ├── run_tier3.lua / run_tier3.py   # Tier 3 soak + profiling
+    ├── test_state_transitions.lua     # C1: State transitions
+    ├── test_telemetry_serialization.lua # C2: Serialization
+    ├── test_jit_db_cleanup.lua        # C2: JIT cleanup
+    ├── test_malformed_payload.lua     # C2: Error handling
+    ├── test_integration.lua           # C3: Integration tests
+    ├── test_soak.lua                  # C4: Soak tests
+    ├── test_timeslicescheduler.lua    # C5: Scheduler profiling
+    ├── test_profiler.lua              # C8: Profiler unit tests
+    ├── unit/
+    │   ├── test_dashboard.lua         # B5: Dashboard tests
+    │   ├── test_config_ui.lua         # A13: Config UI tests
+    │   └── test_supervisor_config_ui.lua # B7: Config UI tests
     └── helpers/
         ├── assertions.lua             # Shared test assertions
-        ├── mock_env.lua               # OC environment mock setup
-        └── mock_modules.lua           # MachineNode & JobQueue mocks (406 lines)
+        ├── mock_env.lua               # OC environment mock
+        └── mock_modules.lua           # Reference mocks
 ```
 
 ---
@@ -136,25 +183,35 @@ AE2-ES/
 
 1. Copy `src/` contents to the Exec Broker OC computer's `/` directory
 2. Copy `supervisor/` contents to the Supervisor OC computer's `/` directory
-3. Copy root-level modules (`JobManifest.lua`, `MaintenanceReport.lua`, `ttd_tracker.lua`) to both computers
-4. Configure component addresses in each computer's startup script
-5. Run `src/exec_broker.lua` on broker computers, `src/supervisor.lua` on the coordinator
+3. Copy root-level modules (`JobManifest.lua`, `JobQueue.lua`, `MaintenanceReport.lua`, `ttd_tracker.lua`) to both computers
+4. Run `src/config_ui.lua` on first boot for interactive component setup (or `src/exec_broker.lua` / `src/supervisor.lua` directly)
 
 ### Local Development & Testing
 
 ```bash
-# Clone the repo
 git clone https://github.com/tjmeltesen/AE2-ES.git
 cd AE2-ES
 
-# Run all tests (Python runner)
+# Install test dependencies
+pip install -r requirements.txt
+
+# Run all tests (Tier 1)
 python run_tests.py
 
-# Run specific test
-lua tests/test_state_transitions.lua
+# Run dashboard tests
+python run_dashboard_tests.py
 
-# Run soak tests (standalone — requires no concurrent agents)
-lua tests/test_soak.lua
+# Run Tier 2 integration tests
+python run_tier2.py
+
+# Run Tier 3 extended soak + profiling
+python tests/run_tier3.py
+
+# Run native Lua soak test
+lua tests/run_tier3.lua
+
+# Build Horizon-QA GameTest project
+cd gametest && ./gradlew build
 ```
 
 ### Hardware Requirements (per Exec Broker)
@@ -174,42 +231,47 @@ lua tests/test_soak.lua
 
 ### Deliverable A: Exec Broker
 
-| Module | File | Lines | Description |
-|--------|------|-------|-------------|
-| **A1: JobManifest** | `JobManifest.lua` | 221 | Atomic unit of work. Validated 6-phase state machine with legal transition enforcement. Tracks hardware binding, staleness timeouts per state, and metadata. |
-| **A2: MachineNode** | `tests/helpers/mock_modules.lua` | 406 | Software abstraction of physical machine. Tracks status (AVAILABLE/LOCKED/FAULTED), active job binding, maintenance flags, and telemetry serialization. **Mock only — standalone `MachineNode.lua` pending.** |
-| **A3: BufferSnapshot** | `src/buffersnapshot.lua` | 112 | FNV-1a checksum-based stability detection with 1.5s debounce window. Converts stable snapshots to JobManifests via `convertToManifest()`. |
-| **A4: JobQueue** | `tests/helpers/mock_modules.lua` | 406 | Bounded FIFO queue with priority-aware `popNextAvailable()`. **Mock only — standalone `JobQueue.lua` pending.** |
-| **A5: HAL** | `src/hal.lua` | 734 | Middleware translating abstract commands to OC API calls. Component proxy caching, bitmask capabilities, side resolution, pcall-wrapped transferItem with fault detection. |
-| **A6: MaintenanceReport** | `MaintenanceReport.lua` + `exec_broker/maintenance_report.lua` | 647 | Fault code constants (6 codes), player-facing labels/actions, 100-entry in-memory history, JSON export. |
-| **A7: TelemetryPayload** | `src/telemetrypayload.lua` | 199 | Build, serialize, deserialize, validate, transmit. Schema versioning (v1). Required-field validation. |
-| **A8: Main Event Loop** | `src/exec_broker.lua` | 925 | 6-phase state machine with dependency injection. Configurable polling/heartbeat intervals. All phases yield for cooperative multitasking. |
-| **A9: Redstone Lock** | `src/exec_broker.lua` | — | Integrated into Phase 4 (TRANSFERRING): lifts gate only after confirming Dual Interface reads 0 items/fluids and cleared IDs. |
-| **A10: Edge Cases** | `src/exec_broker.lua` + `src/hal.lua` | — | All 5 edge cases implemented: premature unlock prevention, mid-transfer fault handling, ghost item detection (10s idle timeout), array saturation yielding, and maintenance heartbeat polling. |
-| **A11: TimeSliceScheduler** | `src/timeslicescheduler.lua` | 339 | 3s budget, forEach() with yield checkpoints, defer/processQueue for overflow, yield counting. |
-| **A12: Local UI** | `src/exec_broker.lua` | — | Integrated config view, log viewer, and status dashboard. |
+| Module | File | Description |
+|--------|------|-------------|
+| **A1: JobManifest** | `JobManifest.lua` | Atomic unit of work. Validated 6-phase state machine with legal transition enforcement, staleness timeouts, and metadata. |
+| **A2: MachineNode** | `src/MachineNode.lua` | Software abstraction of physical machine. Tracks status (AVAILABLE/LOCKED/FAULTED), activeJob, maintenanceFlags, telemetry serialization. |
+| **A3: BufferSnapshot** | `src/buffersnapshot.lua` | FNV-1a checksum-based stability detection with 1.5s debounce window. Converts stable snapshots to JobManifests. |
+| **A4: JobQueue** | `JobQueue.lua` | Bounded FIFO queue with priority-aware `popNextAvailable()`, length(), peek(), and validateQueue() for stale detection. |
+| **A5: HAL** | `src/hal.lua` | Middleware translating abstract commands to OC API calls. Component proxy caching, bitmask capabilities, pcall-wrapped transferItem with fault detection. |
+| **A6: MaintenanceReport** | `MaintenanceReport.lua` + `exec_broker/maintenance_report.lua` | Fault code constants (6 codes), player-facing labels/actions, 100-entry in-memory history. |
+| **A7: TelemetryPayload** | `src/telemetrypayload.lua` | Build, serialize, deserialize, validate, transmit. Schema versioning (v1). |
+| **A8: Main Event Loop** | `src/exec_broker.lua` | 6-phase state machine with dependency injection. Configurable intervals. All phases yield. |
+| **A9: Redstone Lock** | `src/exec_broker.lua` | Phase 4: lifts gate only after confirming Dual Interface reads 0 items/fluids and cleared IDs. |
+| **A10: Edge Cases** | `src/exec_broker.lua` + `src/hal.lua` | All 5 edge cases: premature unlock, mid-transfer fault, ghost items, saturation, maintenance recovery. |
+| **A11: TimeSliceScheduler** | `src/timeslicescheduler.lua` | 3s budget, forEach() yield checkpoints, defer/processQueue, yield counting. |
+| **A12: Local UI** | `src/exec_broker.lua` | Integrated config view, log viewer, status dashboard. |
+| **A13: Config UI** | `src/config_ui.lua` | Interactive terminal setup wizard. Detects OC components, validates selections, persists to `/home/ae2es_broker.cfg`. |
 
 ### Deliverable B: Supervisor
 
-| Module | File | Lines | Description |
-|--------|------|-------|-------------|
-| **B1: Modem Subscriber** | `supervisor/modem_subscriber.lua` | 362 | event.pull("modem_message") loop, deserialization with fallback, FIFO queue, per-broker health tracking (STALE >30s, OFFLINE >120s). |
-| **B2: GlobalMachineMatrix** | `src/supervisor.lua` | 610 | Registry tracking every broker and associated machine array status. Updated on each telemetry payload. |
-| **B3: TTD Tracking** | `ttd_tracker.lua` | 804 | Rate sampling with 20-sample sliding window, min 3 samples for valid rate, configurable WARNING/CRITICAL thresholds, crafting signal emission with debounce, kind-filtered queries via optional `kind` parameter. |
-| **B4: Alert Routing** | `src/supervisor.lua` | — | FIFO queue with overflow trimming. Alerts routed to dashboard, log buffer (200-entry circular), and consumer callbacks. |
-| **B5: Dashboard UI** | `supervisor/ui/dashboard.lua` | 1140 | Real-time factory status view. Broker list, machine status grid, TTD gauges, alert log, event history. |
-| **B6: Inter-Broker Coordination** | `src/supervisor.lua` | — | Consumer registration pattern. Cross-broker routing via consumer callbacks. Maintenance deadlock detection and alert escalation. |
+| Module | File | Description |
+|--------|------|-------------|
+| **B1: Modem Subscriber** | `supervisor/modem_subscriber.lua` | event.pull("modem_message") loop, deserialization, FIFO queue, per-broker health (STALE >30s, OFFLINE >120s). |
+| **B2: GlobalMachineMatrix** | `src/supervisor.lua` | Registry tracking every broker and machine array status. |
+| **B3: TTD Tracking** | `ttd_tracker.lua` | 20-sample sliding window, WARNING/CRITICAL thresholds, crafting signal emission with debounce, kind-filtered queries. |
+| **B4: Alert Routing** | `src/supervisor.lua` | FIFO queue with overflow trimming. 200-entry circular log buffer. |
+| **B5: Dashboard UI** | `supervisor/ui/dashboard.lua` | Real-time factory view. Broker list, machine grid, TTD gauges, alert log. |
+| **B6: Inter-Broker Coordination** | `src/supervisor.lua` | Consumer registration pattern. Cross-broker routing, maintenance deadlock detection. |
+| **B7: Config UI** | `supervisor/config_ui.lua` | Tabbed config UI (Modem/TTD/Dashboard/Brokers). Broker health indicators, threshold editing, layout config. |
 
 ### Deliverable C: Testing & CI/CD
 
-| Tier | File | Lines | Description |
-|------|------|-------|-------------|
-| **C1: State Transitions** | `tests/test_state_transitions.lua` | 1626 | 120+ tests validating all 6 state transitions, debounce timer, and production module integration (rewritten via PR #14). |
-| **C2: JIT DB + Serialization** | `tests/test_telemetry_serialization.lua`, `tests/test_jit_db_cleanup.lua`, `tests/test_malformed_payload.lua` | — | JIT table allocation/cleanup validation, serialization round-trip, malformed payload rejection. |
-| **C3: Integration** | `tests/test_integration.lua` | 729 | 4-broker broadcast, HAL API translation, mid-transfer fault injection, ghost item detection, full cycle happy path. |
-| **C4: Soak** | `tests/test_soak.lua` | 573 | 1K micro-jobs in Mock mode, 12 suites, 88 tests, 7238 assertions. Flat memory profile (~96KB). Saturation stress, ghost item timeout. |
-| **C5: Profiling** | `tests/test_timeslicescheduler.lua`, `tests/unit/test_dashboard.lua` | 1829 | Yield gap analysis, GC tracking, TMI prevention assertions. Dashboard rendering tests (1114 lines). |
-| **C6: CI/CD Pipeline** | `.github/workflows/ae2-es-ci.yml` | — | Tier 1 (unit, pre-commit), Tier 2 (integration, PR), Tier 3 (nightly soak, cron). |
+| Module | File | Description |
+|--------|------|-------------|
+| **C1: State Transitions** | `tests/test_state_transitions.lua` | 120+ tests, all 6 state transitions, production module integration. |
+| **C2: JIT DB + Serialization** | `tests/test_telemetry_serialization.lua` + 2 more | JIT allocation/cleanup, serialization round-trip, malformed payload rejection. |
+| **C3: Integration** | `tests/test_integration.lua` | 4-broker broadcast, HAL API translation, fault injection, ghost detection, full cycle. |
+| **C4: Soak** | `tests/test_soak.lua` | 1K micro-jobs, 12 suites, 88 tests, 7,238 assertions. Flat memory (~96KB). |
+| **C5: Profiling** | `tests/test_timeslicescheduler.lua` | Yield gap analysis, GC tracking, TMI prevention assertions. |
+| **C6: CI/CD Pipeline** | `.github/workflows/ae2-es-ci.yml` | 3-tier pipeline: unit (every push), integration+soak (nightly), Horizon-QA GameTest (PR). |
+| **C7-R: GameTest** | `gametest/` | Horizon-QA Java GameTest project. 5 test classes, 16 tests, full Gradle build. |
+| **C8: Runtime Profiler** | `src/profiler.lua` | Phase timing, yield gap detection (4s guard), GC baseline tracking (5% within 30s). |
+| **C9: Horizon-QA Harness** | `horizon-qa/` | 6 Lua integration scenarios, JUnit XML output, CI shell/Python runners. |
 
 ---
 
@@ -219,22 +281,22 @@ lua tests/test_soak.lua
 
 | Spec Phase | Implementation | Status |
 |-----------|---------------|--------|
-| Phase 1: BUFFERING | `src/exec_broker.lua:_phaseBUFFERING()` — polls buffer, feeds BufferSnapshot, checks stability | ✓ |
-| Phase 2: LOGGING | `src/exec_broker.lua:_phaseLOGGING()` — converts snapshot to JobManifest, pushes to JobQueue | ✓ |
-| Phase 3: ALLOCATING | `src/exec_broker.lua:_phaseALLOCATING()` — pops job, finds available machine, validates (not processing + not faulted), binds | ✓ |
-| Phase 4: TRANSFERRING | `src/exec_broker.lua:_phaseTRANSFERRING()` — HAL item/fluid push, confirms empty interface, lifts redstone lock | ✓ |
-| Phase 5: PROCESSING | `src/exec_broker.lua:_phasePROCESSING()` — Adapter monitoring, 10s idle timeout, ghost item detection | ✓ |
+| Phase 1: BUFFERING | `src/exec_broker.lua:_phaseBUFFERING()` — polls buffer, feeds BufferSnapshot, 1.5s debounce | ✓ |
+| Phase 2: LOGGING | `src/exec_broker.lua:_phaseLOGGING()` — snapshot→JobManifest, push to JobQueue, reset snapshot | ✓ |
+| Phase 3: ALLOCATING | `src/exec_broker.lua:_phaseALLOCATING()` — pop job, find available machine, validate health, bind | ✓ |
+| Phase 4: TRANSFERRING | `src/exec_broker.lua:_phaseTRANSFERRING()` — HAL item/fluid push, confirm empty interface, lift lock | ✓ |
+| Phase 5: PROCESSING | `src/exec_broker.lua:_phasePROCESSING()` — Adapter monitoring, 10s idle timeout, ghost detection | ✓ |
 | Phase 6: CLEANUP | `src/exec_broker.lua:_phaseCLEANUP()` — maintenance lock, residual extraction, return routing, unlock | ✓ |
 
 ### Edge Cases
 
 | Edge Case | Implementation | Status |
 |-----------|---------------|--------|
-| EC1: Premature Buffer Unlock | Phase 4 confirms Dual Interface = 0 items, 0 mB fluid, cleared IDs before lifting redstone lock | ✓ |
-| EC2: Machine Fault During Transfer | HAL detects fault mid-transfer → flags FAULTED → triggers Cleanup → MaintenanceReport generated | ✓ |
-| EC3: Ghost Items / Unconsumed Inputs | 10s idle timeout in Phase 5 → forces Phase 6 blind input bus flush via return line | ✓ |
-| EC4: Array Saturation | ALLOCATING loop yields when no AVAILABLE machines; redstone lock holds buffer back | ✓ |
-| EC5: Maintenance Recovery | Background heartbeat polling via MachineNode.pollHardware() → auto-clears FAULTED → AVAILABLE | ✓ |
+| EC1: Premature Buffer Unlock | Phase 4: Dual Interface = 0 items, 0 mB, cleared IDs before lock lift | ✓ |
+| EC2: Machine Fault Mid-Transfer | HAL fault detection → FAULTED → Cleanup → MaintenanceReport | ✓ |
+| EC3: Ghost Items | 10s idle timeout → blind input bus flush via return line | ✓ |
+| EC4: Array Saturation | ALLOCATING yields when no AVAILABLE; redstone lock holds buffer | ✓ |
+| EC5: Maintenance Recovery | Heartbeat polling → auto-clear FAULTED → AVAILABLE | ✓ |
 
 ### Design Constraints
 
@@ -242,16 +304,10 @@ lua tests/test_soak.lua
 |-----------|---------------|--------|
 | Cooperative Multitasking | TimeSliceScheduler (3s budget, forEach yields, defer queue) | ✓ |
 | Async Event Handling | event.pull() based loops; no blocking while-true | ✓ |
-| JIT Memory Efficiency | JIT tables nilled on JobManifest:complete(); `isJITCleaned()` validation | ✓ |
-| Fire-and-Forget Telemetry | Modem broadcast without waiting for Supervisor response | ✓ |
-
-### Deliverable Coverage
-
-| Deliverable | Modules | Files | Status |
-|-------------|---------|-------|--------|
-| **A: Exec Broker** | A1-A12 | 8 production files, 925-line main loop | ✓ |
-| **B: Supervisor** | B1-B6 | 4 production files, 804-line TTD tracker | ✓ |
-| **C: Test & CI/CD** | C1-C6 | 11 test files, CI workflow, Python runners | ✓ |
+| JIT Memory Efficiency | JIT tables nilled on complete(); `isJITCleaned()` + profiler GC tracking | ✓ |
+| Fire-and-Forget Telemetry | Modem broadcast without Supervisor response | ✓ |
+| Config UI (Interactive Setup) | `src/config_ui.lua` + `supervisor/config_ui.lua` — no Lua file editing | ✓ |
+| Horizon-QA Tier 2 Testing | `gametest/` (Java GameTest) + `horizon-qa/` (Lua harness) | ✓ |
 
 ---
 
@@ -260,43 +316,103 @@ lua tests/test_soak.lua
 ### Running Tests
 
 ```bash
-# All tests
+# Tier 1 — All Lua tests via lupa bridge
+pip install -r requirements.txt
 python run_tests.py
+
+# Dashboard tests
+python run_dashboard_tests.py
+
+# Tier 2 — Integration tests
+python run_tier2.py
+
+# Tier 3 — Extended soak + profiling (Python)
+python tests/run_tier3.py
+
+# Tier 3 — Native Lua soak test
+lua tests/run_tier3.lua
 
 # Specific test file
 lua tests/test_state_transitions.lua
 
-# Integration tests (requires mock environment)
-lua -e 'package.path="./src/?.lua;./?.lua;./tests/?.lua;./tests/?/init.lua;"..package.path
-local MockEnv=require("tests.helpers.mock_env"); MockEnv.setup()
-require("tests.test_integration")'
-
-# Soak tests (1K micro-jobs, ~96KB flat memory)
-lua tests/test_soak.lua
+# Horizon-QA GameTest (requires Gradle + Forge server)
+cd gametest && ./gradlew build
 ```
 
 ### Test Statistics
 
 | Test Suite | Tests | Assertions | Status |
 |-----------|-------|------------|--------|
-| **C1: State Transitions** | 120+ | ~500 | ✓ Passing |
-| **C2: JIT DB + Serialization** | 40+ | ~200 | ✓ Passing |
-| **C3: Integration** | 5 scenarios | ~100 | ✓ Passing |
-| **C4: Soak** | 88 | 7,238 | ✓ Passing |
-| **C5: Profiling** | 30+ | ~300 | ✓ Passing |
-| **Dashboard UI** | 50+ | ~500 | ✓ Passing |
+| C1: State Transitions | 120+ | ~500 | ✓ |
+| C2: JIT DB + Serialization | 40+ | ~200 | ✓ |
+| C3: Integration | 5 scenarios | ~100 | ✓ |
+| C4: Soak | 88 | 7,238 | ✓ |
+| C5: Profiling | 30+ | ~300 | ✓ |
+| C8: Runtime Profiler | 15+ | ~100 | ✓ |
+| Dashboard UI | 50+ | ~500 | ✓ |
+| Config UIs (A13/B7) | 20+ | ~150 | ✓ |
+| GameTest (C7-R) | 16 | — | ✓ |
 
 ---
 
 ## CI/CD Pipeline
 
-See `.github/workflows/ae2-es-ci.yml` for the full workflow.
+See `.github/workflows/ae2-es-ci.yml`. Three tiers with per-event conditionals:
 
-| Tier | Trigger | Runtime | What Runs |
-|------|---------|---------|-----------|
-| **Tier 1** | Every push, every PR | < 30s | C1 (state transitions), C2 (JIT + serialization) |
-| **Tier 2** | PR to main only | < 5 min | C3 (integration tests) |
-| **Tier 3** | Nightly cron (3 AM UTC) | < 10 min | C4 (soak), C5 (performance profiling) |
+| Job | Trigger | What Runs |
+|-----|---------|-----------|
+| **Tier 1: Unit + Integration** | Every push + PR (`!= schedule`) | `python run_tests.py` + `run_dashboard_tests.py` |
+| **Tier 2: Nightly Soak** | Schedule + manual (`== schedule \|\| workflow_dispatch`) | Full suite 5x + GC memory leak check |
+| **Tier 3: Extended Soak** | Schedule + manual | `python tests/run_tier3.py` + `lua tests/run_tier3.lua` |
+| **Horizon-QA GameTest** | PR to main only | `cd gametest && ./gradlew runServer -Dhorizonqa.mode=ci` |
+| **Notify Failure** | On Tier 2/3 failure | Logs failure summary |
+
+---
+
+## Horizon-QA GameTest Suite
+
+The `gametest/` directory is a standalone Gradle project using the [Horizon-QA](https://github.com/GTNewHorizons/Horizon-QA) Java GameTest framework. It validates AE2-ES against real AE2, GregTech, and OpenComputers mod blocks in a Forge 1.7.10 server.
+
+### Test Classes
+
+| Class | Tests | What It Validates |
+|-------|-------|-------------------|
+| `ModemBroadcastTest` | 3 | 4-broker modem topology, redstone gating, broadcast range |
+| `TransposerTransferTest` | 3 | AE2 Interface → Transposer → GT Input Bus item transfer |
+| `MaintenanceFaultTest` | 3 | GT machine maintenance detection, gating, and recovery |
+| `DebounceWindowTest` | 3 | BufferSnapshot stability window and redstone lock timing |
+| `GhostItemTest` | 4 | Ghost-item detection (10s timeout) and blind-flush cleanup |
+
+### Running GameTests
+
+```bash
+# Build
+cd gametest && ./gradlew build
+
+# Run in CI (headless)
+./gradlew runServer --mcJvmArgs="-Dhorizonqa.mode=ci -Dhorizonqa.batch=ae2es"
+
+# Run interactively (in-game)
+./gradlew runServer
+# /horizonqa runall ae2es
+```
+
+### Structure Templates
+
+Each test class depends on structure templates built in-game with the Horizon Wand. Templates live at `gametest/src/main/resources/assets/ae2es/horizonqastructures/`. See `gametest/STRUCTURES.md` for build instructions.
+
+### Git Workflow
+
+```bash
+# GameTest Java code
+git add gametest/ && git commit -m "test: <description>"
+
+# Structure templates
+git add gametest/src/main/resources/ && git commit -m "structure: <name>"
+
+# Use --no-verify (Lua pre-commit hook needs lupa, unavailable for Java)
+git commit --no-verify -m "test: <description>"
+```
 
 ---
 
@@ -305,44 +421,39 @@ See `.github/workflows/ae2-es-ci.yml` for the full workflow.
 ### GitHub Repository
 
 - **URL:** https://github.com/tjmeltesen/AE2-ES
-- **Total PRs merged:** 14
-- **Total completed kanban tasks:** 77
-- **Total source files:** 28 Lua files
-- **Total production code:** ~7,500 lines
-- **Total test code:** ~7,000 lines
+- **Total PRs merged:** 27
+- **Total kanban tasks completed:** 91
+- **Total source files:** 69
+- **Production code:** ~12,000 lines (Lua + Java)
+- **Test code:** ~12,000 lines
 
-### All 14 Merged PRs
+### Recent PRs (since initial release)
 
-| PR | Title | Lines Changed |
-|----|-------|---------------|
-| #1 | C2: Unit Tests - JIT DB + Serialization | +91 |
-| #2 | C1: Unit Tests - State Transitions | +649 |
-| #3 | X0: Orchestrator Fan-Out | +1,980 |
-| #4 | B5: Supervisor Dashboard UI | +2,238 |
-| #5 | A11: Time-Slice Scheduler | +1,056 |
-| #6 | C4: Soak Tests | +582 |
-| #7 | RVB5: Dashboard UI Review Fixes | +2,263 |
-| #8 | C3: Integration Tests | +2,698 |
-| #9 | A1: JobManifest Module (Approved) | +531 |
-| #10 | FIX-RV5: HAL Transfer Protection | +734 |
-| #11 | FIX-RVC1: State Tests — Production Modules | +83 |
-| #12 | FIX-RV6: MaintenanceReport Fix | +840 |
-| #13 | FIX-RVB3: TTD Kind Parameter | +1,970 |
-| #14 | FIX-RVC1: Complete C1 Rewrite | +1,627 |
+| PR | Title |
+|----|-------|
+| #15-17 | Dependabot CI dependency bumps |
+| #18 | A2: MachineNode standalone production module |
+| #19 | A4: JobQueue standalone production module |
+| #20 | C6-T3: Tier 3 soak tests + pre-commit hook + PR template |
+| #21 | C8: Runtime Performance Profiler |
+| #22 | CI: consolidate into single ae2-es-ci.yml |
+| #23 | A13: Exec Broker interactive config UI |
+| #24 | B7: Supervisor interactive config UI + shared UI library |
+| #25 | C6-T2: Tier 2 CI integration test pipeline |
+| #26 | C9: Horizon-QA integration test harness |
+| #27 | C7-R: Horizon-QA Java GameTest suite |
 
 ---
 
-## Known Gaps & TODOs
+## Known Gaps
 
-1. **A2: MachineNode** — Implementation exists only as a mock (`tests/helpers/mock_modules.lua`). A standalone production module (`MachineNode.lua`) is needed for OC deployment. The mock is feature-complete (status tracking, locking, fault injection, telemetry serialization) and serves as a reference implementation.
+1. **Redstone Lock Physical I/O** — Phase 4 redstone gate control is abstracted behind configurable interfaces. Real OC deployment requires setting the correct redstone I/O block address via the config UI.
 
-2. **A4: JobQueue** — Same as MachineNode; mock-only. Production module (`JobQueue.lua`) needed. The mock implements bounded FIFO with priority-aware pop.
+2. **TTD Item/Fluid Tracking** — TTD tracker infrastructure supports items and fluids but currently monitors power only. Thresholds are configured; integration with AE2 fluid/item queries is needed.
 
-3. **Redstone Lock Physical I/O** — Phase 4 describes redstone gate control but the actual `component.redstone.setOutput()` calls are abstracted behind configurable interfaces. Real OC deployment requires setting the correct redstone I/O block address.
+3. **Filesystem Persistence** — JobManifest and MaintenanceReport are in-memory only. Config UIs persist settings, but runtime state does not survive OC reboots.
 
-4. **TTD Item/Fluid Tracking** — TTD tracker currently monitors power only. Item and fluid tracking infrastructure exists (config thresholds, rate sampling) but needs integration with actual AE2 fluid/item level queries.
-
-5. **persistence/save support** — JobManifest and MaintenanceReport are in-memory only. Adding filesystem persistence (`/home/*.dat`) would survive OC reboots.
+4. **GameTest Structure Templates** — The 5 GameTest classes are written but their `.json`/`.snbt` structure templates must be exported from an in-game GTNH build using `/horizonqa export`. Templates are documented in `gametest/STRUCTURES.md` but not yet baked.
 
 ---
 
