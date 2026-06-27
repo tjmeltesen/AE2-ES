@@ -68,7 +68,8 @@ local DEFAULT_SIDE_MAP = {
   itemBuffer  = sides.bottom,    -- Storage Drawers (item buffer)
   fluidBuffer = sides.top,       -- Fluid Hatch (fluid buffer)
   transposerInput  = sides.north,  -- Transposer pulls from drawer here
-  transposerOutput = sides.south,  -- Transposer pushes into machine here
+  transposerOutput = sides.south,  -- Transposer drops into machine input bus
+  transposerReturn = sides.east,   -- Transposer pulls machine output → return chest
 }
 
 -- ===========================================================================
@@ -236,7 +237,8 @@ end
 
 --- Resolve a logical role name to a side constant.
 -- @param role  string — one of "inputBus", "inputHatch",
---              "itemBuffer", "fluidBuffer", "transposerInput", "transposerOutput"
+--              "itemBuffer", "fluidBuffer", "transposerInput", "transposerOutput",
+--              "transposerReturn"
 -- @return number (side constant) or nil if role unknown
 function HAL:resolveSide(role)
   local side = self._sideMap[role]
