@@ -925,42 +925,38 @@ end
 -- ===========================================================================
 -- Entry point — run as standalone script
 -- ===========================================================================
--- When executed directly (not via require), load config and start the broker.
--- Wrapped in pcall for vanilla Lua environments.
-if arg and (#arg == 0 or arg[0]:match("exec_broker")) then
-  local ok, err = pcall(function()
-    local cfgPath = "/home/ae2es_broker.cfg"
-    local cfgFile = io.open(cfgPath, "r")
-    local config = nil
+-- OC does not populate 'arg'. Always attempt to run; pcall handles errors.
+local _ep_ok, _ep_err = pcall(function()
+  local cfgPath = "/home/ae2es_broker.cfg"
+  local cfgFile = io.open(cfgPath, "r")
+  local config = nil
 
-    if cfgFile then
-      local raw = cfgFile:read("*a")
-      cfgFile:close()
-      local ok2, result = pcall(loadstring("return " .. raw))
-      if ok2 and type(result) == "table" then
-        config = result
-        print("Loaded config from " .. cfgPath)
-      end
+  if cfgFile then
+    local raw = cfgFile:read("*a")
+    cfgFile:close()
+    local ok2, result = pcall(loadstring("return " .. raw))
+    if ok2 and type(result) == "table" then
+      config = result
+      print("Loaded config from " .. cfgPath)
     end
-
-    if not config then
-      print("No config found. Running config UI first...")
-      local ConfigUI = require("src.config_ui")
-      local ui = ConfigUI:new()
-      config = ui:run()
-      if not config then
-        error("Configuration cancelled — cannot start broker without config")
-      end
-    end
-
-    local broker = ExecBroker.new(config)
-    print("Starting Exec Broker: " .. config.brokerId)
-    broker:run()
-  end)
-  if not ok then
-    print("Exec Broker requires OpenComputers runtime")
-    print("Error: " .. tostring(err))
   end
+
+  if not config then
+    print("No config found. Running config UI first...")
+    local ConfigUI = require("src.config_ui")
+    local ui = ConfigUI:new()
+    config = ui:run()
+    if not config then
+      error("Configuration cancelled — cannot start broker without config")
+    end
+  end
+
+  local broker = ExecBroker.new(config)
+  print("Starting Exec Broker: " .. config.brokerId)
+  broker:run()
+end)
+if not _ep_ok and not _ep_err then
+  -- Silently ignore: module was required()'d
 end
 
 return ExecBroker

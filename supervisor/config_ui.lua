@@ -1086,18 +1086,16 @@ end
 -- ===========================================================================
 -- Entry point — run as standalone script
 -- ===========================================================================
-if arg and (#arg == 0 or arg[0]:match("config_ui")) then
-  local ok, err = pcall(function()
-    local cfg = ConfigUI.run_or_wizard()
-    if cfg then
-      ConfigUI.save_config(cfg)
-      print("Configuration saved. Run supervisor.lua to start the supervisor.")
-    end
-  end)
-  if not ok then
-    print("Supervisor Config UI requires OpenComputers runtime")
-    print("Error: " .. tostring(err))
+-- OC does not populate 'arg'. Always attempt to run; pcall handles errors.
+local _ep_ok, _ep_err = pcall(function()
+  local cfg = ConfigUI.run_or_wizard()
+  if cfg then
+    ConfigUI.save_config(cfg)
+    print("Configuration saved. Run supervisor.lua to start the supervisor.")
   end
+end)
+if not _ep_ok and not _ep_err then
+  -- Silently ignore: module was required()'d
 end
 
 return ConfigUI
