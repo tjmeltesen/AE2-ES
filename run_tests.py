@@ -84,6 +84,8 @@ test_files = [
     "tests.test_jit_db_cleanup",
     "tests.test_telemetry_serialization",
     "tests.test_malformed_payload",
+    "tests.test_logger_throughput",
+    "tests.test_logger_io_throttle",
     "tests.test_integration",
     "tests.test_soak",
     "tests.test_timeslicescheduler",
