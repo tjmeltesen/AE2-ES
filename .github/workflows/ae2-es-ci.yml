@@ -152,23 +152,20 @@ jobs:
         working-directory: gametest
         run: |
           echo "=== GameTest Java Files ==="
-          find src -name "*.java" | while read f; do echo "  $f"; done
+          find src -name "*.java"
           echo ""
           echo "=== Syntax Check ==="
-          ERRORS=0
+          FAILED=0
           for f in $(find src -name "*.java"); do
-            javac -d /tmp/gametest-out "$f" 2>/tmp/err.txt
-            if [ $? -ne 0 ]; then
-              # Only count non-classpath errors
-              if grep -qv "cannot find symbol\|package.*does not exist" /tmp/err.txt; then
-                echo "FAIL: $f"
-                cat /tmp/err.txt
-                ERRORS=$((ERRORS+1))
-              fi
+            javac -d /tmp/gametest-out "$f" 2>/tmp/err.txt || true
+            if grep -q "error:" /tmp/err.txt 2>/dev/null; then
+              echo "FAIL: $f"
+              grep "error:" /tmp/err.txt
+              FAILED=1
             fi
           done
-          if [ $ERRORS -gt 0 ]; then
-            echo "$ERRORS file(s) have syntax errors"
+          if [ "$FAILED" = "1" ]; then
+            echo "Syntax errors found"
             exit 1
           fi
           echo "All GameTest Java files pass syntax check"
