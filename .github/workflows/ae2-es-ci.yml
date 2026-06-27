@@ -142,18 +142,25 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Set up JDK 17 (to run Gradle wrapper generation)
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+
+      - name: Generate Gradle 7.6 wrapper (supports JDK 8 compilation)
+        working-directory: gametest
+        run: gradle wrapper --gradle-version 7.6
+
       - name: Set up JDK 8 (for Minecraft 1.7.10 compilation)
         uses: actions/setup-java@v4
         with:
           java-version: "8"
           distribution: "temurin"
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-
       - name: Compile GameTest project
         working-directory: gametest
-        run: gradle compileJava --no-daemon --stacktrace
+        run: ./gradlew compileJava --no-daemon --stacktrace
 
       - name: Archive build output
         if: always()
