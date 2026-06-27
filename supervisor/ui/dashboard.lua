@@ -49,7 +49,7 @@ local REFRESH_RATE = 0.5                -- seconds between frame renders (2 FPS)
 local FLASH_INTERVAL = 1.0              -- seconds between alert flash toggles
 local MATRIX_COLS = 4                   -- machines per row in matrix panel
 local MAX_MATRIX_ROWS = 7               -- max rows in matrix panel (rows 12-18)
-local ALERT_PANEL_HEIGHT = 4            -- rows for alert panel (19-22)
+local ALERT_PANEL_HEIGHT = 2            -- content rows for alert panel (rows 21-22)
 local BROKER_PANEL_HEIGHT = 8           -- rows for broker panel (2-9) + header
 
 -- Panel focus identifiers
@@ -371,7 +371,7 @@ function Dashboard.new(subscriber, matrix, ttd, alerts)
 
     -- Broker panel state
     self.selected_broker = nil  -- broker ID selected for matrix detail
-    self.broker_scroll = 1     -- scroll offset (0-indexed from top of view)
+    self.broker_scroll = 0     -- scroll offset (0-indexed from top of view)
 
     -- Alert panel state
     self.alert_scroll = 0      -- scroll offset for alert list
@@ -441,7 +441,7 @@ function Dashboard:stop()
         return
     end
     self.running = false
-    pcall(computer.pushSignal, "key_down")
+    pcall(function() computer.pushSignal("key_down") end)
 end
 
 --===========================================================================
@@ -607,12 +607,23 @@ function Dashboard:navigate(delta)
             if self.focus_index < 1 then self.focus_index = count end
             if self.focus_index > count then self.focus_index = 1 end
         end
-        -- Update selected broker for matrix panel
-        if self.focus_index > 0 and broker_list[self.focus_index] then
-            self.selected_broker = broker_list[self.focus_index]
-        end
+        -- Adjust broker_scroll to keep selection visible (rows 5-10 = 6 visible)
+            local broker_visible_max = 6
+            local vis_start = self.broker_scroll + 1
+            local vis_end = self.broker_scroll + broker_visible_max
+            if self.focus_index < vis_start then
+                self.broker_scroll = self.focus_index - 1
+            elseif self.focus_index > vis_end then
+                self.broker_scroll = self.focus_index - broker_visible_max
+            end
+            if self.broker_scroll < 0 then self.broker_scroll = 0 end
 
-    elseif self.focused_panel == PANEL_MATRIX then
+            -- Update selected broker for matrix panel
+            if self.focus_index > 0 and broker_list[self.focus_index] then
+                self.selected_broker = broker_list[self.focus_index]
+            end
+
+        elseif self.focused_panel == PANEL_MATRIX then
         -- Navigate machine selection within matrix
         if not self.selected_broker then return end
         local machines = self.matrix:getMachines(self.selected_broker)
@@ -820,7 +831,6 @@ function Dashboard:render_broker_panel()
 
     local visible_start = self.broker_scroll
     local visible_max = 6  -- rows 5-10
-    local focus_row = nil
 
     for i = 1, visible_max do
         local data_idx = visible_start + i
@@ -868,7 +878,7 @@ function Dashboard:render_broker_panel()
             gpu.set(51, row_y, format_elapsed(elapsed))
 
             if is_selected then
-                focus_row = row_y
+                -- selection highlight is already drawn via row_bg
             end
         else
             -- Empty row
@@ -923,8 +933,12 @@ function Dashboard:render_matrix_panel()
     -- machines format: { [addr] = { status, progress, job, label }, ... }
     local machine_list = {}
     for addr, data in pairs(machines) do
-        data._addr = addr
-        table.insert(machine_list, data)
+        local entry = {}
+        for k, v in pairs(data) do
+            entry[k] = v
+        end
+        entry._addr = addr
+        table.insert(machine_list, entry)
     end
     table.sort(machine_list, function(a, b) return (a._addr or "") < (b._addr or "") end)
 
@@ -936,13 +950,13 @@ function Dashboard:render_matrix_panel()
         return
     end
 
-    -- Render grid: MATRIX_COLS columns, up to 6 rows
+    -- Render grid: MATRIX_COLS columns, up to 5 rows (rows 14-18)
     local col_width = math.floor(TERM_COLS / MATRIX_COLS)
 
     for idx, machine in ipairs(machine_list) do
         local col = (idx - 1) % MATRIX_COLS
         local row = math.floor((idx - 1) / MATRIX_COLS)
-        if row < 6 then  -- 6 visible rows
+        if row < 5 then  -- 5 visible data rows (14-18)
             local x = 1 + col * col_width
             local y = ROW_MATRIX_START + 3 + row
             local is_selected = (self.focused_panel == PANEL_MATRIX and self.focus_index == idx)
@@ -979,8 +993,8 @@ function Dashboard:render_matrix_panel()
         end
     end
 
-    -- Clear unused rows
-    for r = math.ceil(#machine_list / MATRIX_COLS), 5 do
+    -- Clear unused rows (max data rows = 5, indices 0-4)
+    for r = math.ceil(#machine_list / MATRIX_COLS), 4 do
         for c = 0, MATRIX_COLS - 1 do
             fill_region(gpu, 1 + c * col_width, ROW_MATRIX_START + 3 + r, col_width, 1, COLOR_PANEL_BG)
         end
