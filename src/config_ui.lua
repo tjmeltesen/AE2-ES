@@ -74,7 +74,7 @@ local DEFAULT_CONFIG = {
   itemBufferAddr = "",     -- drawers/storage for items
   fluidBufferAddr = "",    -- hatches/tanks for fluids
   -- Per-lane transposer config (set during machine config)
-  -- { [laneName] = { adapter, dualInterface, transposerAddr, machineAddr, pull, push, return } }
+  -- { [laneName] = { dualInterface, transposerAddr, machineAddr, pull, push, return } }
   machineTransposers = {},
   pollInterval      = 0.5,
   heartbeatInterval = 2.0,
@@ -1118,7 +1118,6 @@ function ConfigUI:runSetupWizard()
       table.insert(self._config.machines, {
         laneId = laneId,
         machineAddr = cfg.machineAddr,
-        adapter = cfg.adapter,
       })
       self:_setupMachineType(cfg.machineAddr)
     end
@@ -1208,13 +1207,13 @@ function ConfigUI:_selectComponent(typeName, detected, prompt)
   return addr
 end
 
---- Configure a lane: adapter, dual interface, transposer, machine adapter, and sides.
+--- Configure a lane: dual interface, transposer, machine adapter, and sides.
 -- Each lane has:
---   adapter        — OC adapter giving computer access to this lane
 --   dualInterface  — subnet dual interface (items flow here from central buffer)
 --   transposerAddr — item transposer (pulls from subnet, pushes to machine)
 --   machineAddr    — GT machine adapter (the actual machine controller)
 --   pull/push/return — transposer sides
+-- OC adapters are handled natively by the component API — no address needed.
 -- @param laneId  string  identifier for this lane (e.g. "Lane 1")
 function ConfigUI:_setupTransposerSides(laneId)
   self:_clear()
@@ -1222,10 +1221,10 @@ function ConfigUI:_setupTransposerSides(laneId)
   self:_writeLine(3, "Configure the components for this lane:", COLOR_CYAN)
   self:_writeLine(4, "")
   self:_writeLine(5, "Each lane has:", COLOR_CYAN)
-  self:_writeLine(6, "  - OC Adapter        — lets the computer control this lane", COLOR_GRAY)
-  self:_writeLine(7, "  - Dual Interface    — subnet connection (items arrive here)", COLOR_GRAY)
-  self:_writeLine(8, "  - Item Transposer   — moves items into the machine", COLOR_GRAY)
-  self:_writeLine(9, "  - Machine Adapter   — the GT machine itself", COLOR_GRAY)
+  self:_writeLine(6, "  - Dual Interface    — subnet connection (items arrive here)", COLOR_GRAY)
+  self:_writeLine(7, "  - Item Transposer   — moves items into the machine", COLOR_GRAY)
+  self:_writeLine(8, "  - Machine Adapter   — the GT machine itself", COLOR_GRAY)
+  self:_writeLine(9, "  (OC Adapter is handled natively — no address needed)", COLOR_DIM)
   self:_writeLine(10, "")
   self:_pressAnyKey()
 
@@ -1236,7 +1235,6 @@ function ConfigUI:_setupTransposerSides(laneId)
   -- Component addresses
   self:_clear()
   self:_drawTitle(laneId .. " — Component Addresses")
-  local adapter = self:_readLine("OC Adapter address: ", "")
   local dualIface = self:_readLine("Dual Interface address: ", "")
   local transposer = self:_readLine("Item Transposer address: ", "")
   local machine = self:_readLine("Machine Adapter address: ", "")
@@ -1257,7 +1255,6 @@ function ConfigUI:_setupTransposerSides(laneId)
   local returnSide = self:_readNumber("RETURN side (from machine output)", 5, 0, 5)
 
   self._config.machineTransposers[laneId] = {
-    adapter        = adapter,
     dualInterface  = dualIface,
     transposerAddr = transposer,
     machineAddr    = machine,

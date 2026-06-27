@@ -84,8 +84,8 @@ local DEFAULT_MODULES = {
 --- Create a new ExecBroker instance.
 -- @param config  table with keys:
 --   brokerId         — string, unique broker identifier (required)
---   machines         — array, [{laneId, machineAddr, adapter}] (required)
---   machineTransposers — table, {[laneId] = {adapter, dualInterface, transposerAddr, machineAddr, pull, push, return}}
+--   machines         — array, [{laneId, machineAddr}] (required)
+--   machineTransposers — table, {[laneId] = {dualInterface, transposerAddr, machineAddr, pull, push, return}}
 --   itemBufferAddr   — string, drawer controller address (global item buffer)
 --   fluidBufferAddr  — string, fluid hatch address (global fluid buffer)
 --   halConfig        — table, passed to HAL:new() (sideMap, cacheTTL, etc.)
@@ -148,7 +148,6 @@ function ExecBroker.new(config)
       table.insert(machineEntries, {
         laneId = addr,
         machineAddr = addr,
-        adapter = addr,
         _node = node,
       })
     end
@@ -157,7 +156,6 @@ function ExecBroker.new(config)
   for _, lane in ipairs(machineEntries) do
     local laneId = lane.laneId
     local machineAddr = lane.machineAddr or lane.address
-    local adapterAddr = lane.adapter or machineAddr
 
     -- Use pre-built node if provided (backward compat), otherwise create one
     local node = lane._node
@@ -167,10 +165,9 @@ function ExecBroker.new(config)
           machineType = "gt_machine",
           hardwareAddress = machineAddr,
           laneId = laneId,
-          adapter = adapterAddr,
         })
       else
-        node = { address = machineAddr, laneId = laneId, adapter = adapterAddr }
+        node = { address = machineAddr, laneId = laneId }
       end
     end
 
