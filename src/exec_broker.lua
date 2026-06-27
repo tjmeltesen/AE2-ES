@@ -136,6 +136,13 @@ function ExecBroker.new(config)
     reports[addr] = M.MaintenanceReport.new(addr)
   end
 
+  -- Logger for diagnostics and error tracking
+  local BrokerLogger = config.logger or safeRequire("src.broker_logger")
+  local logger = nil
+  if BrokerLogger and type(BrokerLogger.new) == "function" then
+    logger = BrokerLogger.new(config.brokerId)
+  end
+
   -- Pre-compute machine array (ordered iteration)
   local machineList = {}
   for addr, node in pairs(config.machines) do
@@ -156,6 +163,7 @@ function ExecBroker.new(config)
     _snapshot        = snapshot,
     _queue           = queue,
     _reports         = reports,
+    _logger          = logger,
 
     -- Hardware
     _machines        = config.machines,
@@ -758,6 +766,9 @@ function ExecBroker:tick()
 
   -- Record phase transition
   if nextPhase ~= self._phase then
+    if self._logger then
+      self._logger:info(string.format("Phase: %s -> %s (cycle %d)", self._phase, nextPhase, self._stats.cycles + 1))
+    end
     self._phase = nextPhase
     self._stats.cycles = self._stats.cycles + 1
   end
@@ -786,6 +797,8 @@ end
 -- For testing without OC, call tick() directly in a loop.
 -- @param maxTicks  number  optional max ticks (nil = run forever)
 function ExecBroker:run(maxTicks)
+  if self._logger then self._logger:info("Broker starting — phase: " .. self._phase) end
+
   -- Try to load OC event library
   local event = safeRequire("event")
   local computer = safeRequire("computer")
@@ -794,9 +807,15 @@ function ExecBroker:run(maxTicks)
   self._running = true
 
   while self._running do
-    -- Execute one tick
-    local ok = self:tick()
-    if not ok then break end
+    -- Execute one tick with error catching
+    local ok, err = pcall(self.tick, self)
+    if not ok then
+      if self._logger then
+        self._logger:error("Tick failed: " .. tostring(err))
+      end
+      break
+    end
+    if not err then break end
 
     ticks = ticks + 1
     if maxTicks and ticks >= maxTicks then break end
