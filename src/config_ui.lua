@@ -15,6 +15,19 @@ Graceful fallback: if GPU/screen not available, uses basic terminal I/O.
 Cooperative multitasking: yields between screens via os.sleep(0).
 ]]--
 
+-- DEBUG: Wrap io.write to catch table args
+local _orig_write = io.write
+io.write = function(...)
+  local args = {...}
+  for i, v in ipairs(args) do
+    if type(v) == "table" then
+      print("DEBUG io.write got TABLE at arg " .. i .. ": " .. tostring(v))
+      args[i] = tostring(v)
+    end
+  end
+  return _orig_write(table.unpack(args))
+end
+
 local ConfigUI = {}
 ConfigUI.__index = ConfigUI
 
