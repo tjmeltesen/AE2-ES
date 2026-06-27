@@ -926,36 +926,41 @@ end
 -- Entry point — run as standalone script
 -- ===========================================================================
 -- When executed directly (not via require), load config and start the broker.
+-- Wrapped in pcall for vanilla Lua environments.
 if arg and (#arg == 0 or arg[0]:match("exec_broker")) then
-  -- Try to load config from the saved file
-  local cfgPath = "/home/ae2es_broker.cfg"
-  local cfgFile = io.open(cfgPath, "r")
-  local config = nil
+  local ok, err = pcall(function()
+    local cfgPath = "/home/ae2es_broker.cfg"
+    local cfgFile = io.open(cfgPath, "r")
+    local config = nil
 
-  if cfgFile then
-    local raw = cfgFile:read("*a")
-    cfgFile:close()
-    local ok, result = pcall(loadstring("return " .. raw))
-    if ok and type(result) == "table" then
-      config = result
-      print("Loaded config from " .. cfgPath)
+    if cfgFile then
+      local raw = cfgFile:read("*a")
+      cfgFile:close()
+      local ok2, result = pcall(loadstring("return " .. raw))
+      if ok2 and type(result) == "table" then
+        config = result
+        print("Loaded config from " .. cfgPath)
+      end
     end
-  end
 
-  if not config then
-    print("No config found. Running config UI first...")
-    local ConfigUI = require("src.config_ui")
-    local ui = ConfigUI:new()
-    config = ui:run()
     if not config then
-      error("Configuration cancelled — cannot start broker without config")
+      print("No config found. Running config UI first...")
+      local ConfigUI = require("src.config_ui")
+      local ui = ConfigUI:new()
+      config = ui:run()
+      if not config then
+        error("Configuration cancelled — cannot start broker without config")
+      end
     end
-  end
 
-  -- Create and start the broker
-  local broker = ExecBroker.new(config)
-  print("Starting Exec Broker: " .. config.brokerId)
-  broker:run()
+    local broker = ExecBroker.new(config)
+    print("Starting Exec Broker: " .. config.brokerId)
+    broker:run()
+  end)
+  if not ok then
+    print("Exec Broker requires OpenComputers runtime")
+    print("Error: " .. tostring(err))
+  end
 end
 
 return ExecBroker

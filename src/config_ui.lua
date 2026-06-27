@@ -1783,13 +1783,19 @@ end
 -- Entry point — run as standalone script
 -- ===========================================================================
 -- When executed directly (not via require), launch the config UI.
--- OC convention: the argument table is populated when run as a script.
+-- Wrapped in pcall for vanilla Lua environments (no os.sleep).
 if arg and (#arg == 0 or arg[0]:match("config_ui")) then
-  local ui = ConfigUI:new()
-  local cfg = ui:run()
-  if cfg then
-    ui:saveConfig()
-    print("Configuration saved. Run exec_broker.lua to start the broker.")
+  local ok, err = pcall(function()
+    local ui = ConfigUI:new()
+    local cfg = ui:run()
+    if cfg then
+      ui:saveConfig()
+      print("Configuration saved. Run exec_broker.lua to start the broker.")
+    end
+  end)
+  if not ok then
+    print("Config UI requires OpenComputers runtime (os.sleep, component API)")
+    print("Error: " .. tostring(err))
   end
 end
 
