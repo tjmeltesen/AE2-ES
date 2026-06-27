@@ -77,7 +77,7 @@ jobs:
 
       - name: Archive performance report (if generated)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tier2-performance-report
           path: tier3-performance-report.json
@@ -115,7 +115,7 @@ jobs:
 
       - name: Archive performance report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tier3-soak-report
           path: tier3-performance-report.json
@@ -173,7 +173,7 @@ jobs:
 
       - name: Archive build output
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: horizon-qa-gametest-build
           path: gametest/build/
