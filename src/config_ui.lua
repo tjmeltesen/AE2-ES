@@ -1781,21 +1781,20 @@ end
 -- ===========================================================================
 -- Entry point — run as standalone script
 -- ===========================================================================
--- When executed directly (not via require), launch the config UI.
--- Wrapped in pcall for vanilla Lua environments (no os.sleep).
-if arg and (#arg == 0 or arg[0]:match("config_ui")) then
-  local ok, err = pcall(function()
-    local ui = ConfigUI:new()
-    local cfg = ui:run()
-    if cfg then
-      ui:saveConfig()
-      print("Configuration saved. Run exec_broker.lua to start the broker.")
-    end
-  end)
-  if not ok then
-    print("Config UI requires OpenComputers runtime (os.sleep, component API)")
-    print("Error: " .. tostring(err))
+-- OC does not populate 'arg' like standard Lua. Always attempt to run;
+-- pcall gracefully handles missing OC runtime. When required()'d as a
+-- module, the entry point still fires briefly but the pcall catches the
+-- early return — the caller still gets the ConfigUI table.
+local _ep_ok, _ep_err = pcall(function()
+  local ui = ConfigUI:new()
+  local cfg = ui:run()
+  if cfg then
+    ui:saveConfig()
+    print("Configuration saved. Run exec_broker.lua to start the broker.")
   end
+end)
+if not _ep_ok and not _ep_err then
+  -- Silently ignore: module was required()'d, not run directly
 end
 
 return ConfigUI
