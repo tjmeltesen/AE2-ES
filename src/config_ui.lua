@@ -73,8 +73,9 @@ local DEFAULT_CONFIG = {
   centralBufferAddr = "",  -- deprecated, kept for migration
   itemBufferAddr = "",     -- drawers/storage for items
   fluidBufferAddr = "",    -- hatches/tanks for fluids
-  -- Per-machine transposer sides (set during machine config)
-  machineTransposers = {},  -- { [address] = { pull, push, return } }
+  -- Per-lane transposer config (set during machine config)
+  -- { [laneName] = { adapter, dualInterface, transposerAddr, machineAddr, pull, push, return } }
+  machineTransposers = {},
   pollInterval      = 0.5,
   heartbeatInterval = 2.0,
   debounceWindow    = 1.5,
@@ -1095,37 +1096,30 @@ function ConfigUI:runSetupWizard()
   local hatchAddr = self:_readLine("Fluid buffer address (hatch, or skip): ", "")
   self._config.fluidBufferAddr = hatchAddr
 
-  -- Step 6: Machine configuration
+  -- Step 6: Lane configuration
   self:_clear()
-  self:_drawTitle("Step 6: Machine Configuration")
-  self:_writeLine(3, "Add machines that this broker will manage.", COLOR_CYAN)
-  self:_writeLine(4, "Each machine needs a GT machine controller block with an Adaptor.")
-  self:_writeLine(5, "")
+  self:_drawTitle("Step 6: Lane Configuration")
+  self:_writeLine(3, "Configure each processing lane that this broker manages.", COLOR_CYAN)
+  self:_writeLine(4, "Each lane contains an adapter, dual interface, transposer, and machine.")
+  self:_writeLine(5, "Lanes are numbered sequentially (Lane 1, Lane 2, ...).")
+  self:_writeLine(6, "")
 
   self._config.machines = {}
+  self._config.machineTransposers = {}
 
-  if #detected.gtMachines > 0 then
-    self:_writeLine(6, string.format("Detected %d GT machine(s):", #detected.gtMachines))
+  local laneCount = self:_readNumber("How many lanes to configure", 1, 1, 16)
 
-    for _, entry in ipairs(detected.gtMachines) do
-      if self:_confirm(string.format("Add %s (%s)", entry.type, entry.address:sub(1, 8).."..."), true) then
-        table.insert(self._config.machines, entry.address)
-        self:_setupMachineType(entry.address)
-        self:_setupTransposerSides(entry.address)
-      end
-    end
-  else
-    self:_writeLine(6, "No GT machines detected. You can add addresses manually.", COLOR_YELLOW)
-    self:_pressAnyKey()
-  end
-
-  -- Manual machine addition loop
-  while self:_confirm("Add another machine manually", false) do
-    local addr = self:_readLine("Machine component address: ")
-    if addr and #addr > 0 then
-      table.insert(self._config.machines, addr)
-      self:_setupMachineType(addr)
-      self:_setupTransposerSides(addr)
+  for i = 1, laneCount do
+    local laneId = "Lane " .. tostring(i)
+    self:_setupTransposerSides(laneId)
+    local cfg = self._config.machineTransposers[laneId]
+    if cfg and cfg.machineAddr and cfg.machineAddr ~= "" then
+      table.insert(self._config.machines, {
+        laneId = laneId,
+        machineAddr = cfg.machineAddr,
+        adapter = cfg.adapter,
+      })
+      self:_setupMachineType(cfg.machineAddr)
     end
   end
 
@@ -1213,37 +1207,62 @@ function ConfigUI:_selectComponent(typeName, detected, prompt)
   return addr
 end
 
---- Configure transposer pull/push/return sides for a machine.
--- The transposer has 3 sides:
---   1. Pull side — pulls items FROM the drawer/item buffer
---   2. Push side — drops items INTO the machine's input bus
---   3. Return side — pulls finished products FROM machine output → return chest
--- @param address  string  machine component address
-function ConfigUI:_setupTransposerSides(address)
+--- Configure a lane: adapter, dual interface, transposer, machine adapter, and sides.
+-- Each lane has:
+--   adapter        — OC adapter giving computer access to this lane
+--   dualInterface  — subnet dual interface (items flow here from central buffer)
+--   transposerAddr — item transposer (pulls from subnet, pushes to machine)
+--   machineAddr    — GT machine adapter (the actual machine controller)
+--   pull/push/return — transposer sides
+-- @param laneId  string  identifier for this lane (e.g. "Lane 1")
+function ConfigUI:_setupTransposerSides(laneId)
   self:_clear()
-  self:_drawTitle("Transposer Configuration")
-  self:_writeLine(3, string.format("Machine: %s", address:sub(1, 16)), COLOR_CYAN)
+  self:_drawTitle("Lane Configuration: " .. laneId)
+  self:_writeLine(3, "Configure the components for this lane:", COLOR_CYAN)
   self:_writeLine(4, "")
-  self:_writeLine(5, "The transposer has three sides:", COLOR_CYAN)
-  self:_writeLine(6, "  1. Pull side  — pulls items FROM the drawer", COLOR_GRAY)
-  self:_writeLine(7, "  2. Push side  — drops items INTO the machine input bus", COLOR_GRAY)
-  self:_writeLine(8, "  3. Return side — pulls output FROM machine → return chest", COLOR_GRAY)
-  self:_writeLine(9, "")
-  self:_writeLine(10, "Sides: 0=bottom, 1=top, 2=back, 3=front, 4=left, 5=right", COLOR_DIM)
-  self:_writeLine(11, "")
+  self:_writeLine(5, "Each lane has:", COLOR_CYAN)
+  self:_writeLine(6, "  - OC Adapter        — lets the computer control this lane", COLOR_GRAY)
+  self:_writeLine(7, "  - Dual Interface    — subnet connection (items arrive here)", COLOR_GRAY)
+  self:_writeLine(8, "  - Item Transposer   — moves items into the machine", COLOR_GRAY)
+  self:_writeLine(9, "  - Machine Adapter   — the GT machine itself", COLOR_GRAY)
+  self:_writeLine(10, "")
+  self:_pressAnyKey()
 
   if not self._config.machineTransposers then
     self._config.machineTransposers = {}
   end
 
-  local pullSide = self:_readNumber("PULL side (from drawer)", 2, 0, 5)
+  -- Component addresses
+  self:_clear()
+  self:_drawTitle(laneId .. " — Component Addresses")
+  local adapter = self:_readLine("OC Adapter address: ", "")
+  local dualIface = self:_readLine("Dual Interface address: ", "")
+  local transposer = self:_readLine("Item Transposer address: ", "")
+  local machine = self:_readLine("Machine Adapter address: ", "")
+
+  -- Transposer sides
+  self:_clear()
+  self:_drawTitle(laneId .. " — Transposer Sides")
+  self:_writeLine(3, "Transposer has three sides:", COLOR_CYAN)
+  self:_writeLine(4, "  Pull side   — pulls items FROM the subnet/dual interface", COLOR_GRAY)
+  self:_writeLine(5, "  Push side   — drops items INTO the machine input bus", COLOR_GRAY)
+  self:_writeLine(6, "  Return side — pulls circuits/output FROM machine back", COLOR_GRAY)
+  self:_writeLine(7, "")
+  self:_writeLine(8, "Sides: 0=bottom, 1=top, 2=back, 3=front, 4=left, 5=right", COLOR_DIM)
+  self:_writeLine(9, "")
+
+  local pullSide = self:_readNumber("PULL side (from subnet)", 2, 0, 5)
   local pushSide = self:_readNumber("PUSH side (into machine input bus)", 3, 0, 5)
   local returnSide = self:_readNumber("RETURN side (from machine output)", 5, 0, 5)
 
-  self._config.machineTransposers[address] = {
-    pull   = pullSide,
-    push   = pushSide,
-    return = returnSide,
+  self._config.machineTransposers[laneId] = {
+    adapter        = adapter,
+    dualInterface  = dualIface,
+    transposerAddr = transposer,
+    machineAddr    = machine,
+    pull           = pullSide,
+    push           = pushSide,
+    ["return"]     = returnSide,
   }
 end
 
