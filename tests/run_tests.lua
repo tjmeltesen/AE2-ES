@@ -14,6 +14,16 @@ local testFiles = {
   "tests.test_timeslicescheduler",
   "tests.test_state_transitions",
   "tests.test_profiler",
+  "tests.unit.test_config_ui",
+  "tests.unit.test_supervisor_config_ui",
+}
+
+-- Standalone test files (dofile instead of require)
+local standaloneTests = {
+  "MaintenanceReport_test.lua",
+  "JobManifest_test.lua",
+  "JobQueue_test.lua",
+  "ttd_tracker_test.lua",
 }
 
 -- Setup package path to include project root
@@ -41,6 +51,15 @@ for _, testModule in ipairs(testFiles) do
   local ok, err = pcall(require, testModule)
   if not ok then
     print(string.format("  ERROR loading %s: %s", testModule, tostring(err)))
+    totalFailed = totalFailed + 1
+  end
+end
+
+-- Run standalone test files via dofile
+for _, testFile in ipairs(standaloneTests) do
+  local ok, err = pcall(dofile, testFile)
+  if not ok then
+    print(string.format("  ERROR loading %s: %s", testFile, tostring(err)))
     totalFailed = totalFailed + 1
   end
 end
