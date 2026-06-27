@@ -1,0 +1,138 @@
+name: AE2-ES CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 3 * * *'  # Daily at 3:00 AM UTC
+  workflow_dispatch:
+    inputs:
+      skip_tier3:
+        description: 'Skip Tier 3 soak test'
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUNBUFFERED: '1'
+  LUA_PATH: './src/?.lua;./?.lua;./tests/?.lua;./tests/?/init.lua;;'
+
+jobs:
+  # ===========================================================================
+  # Tier 1: Fast pre-commit / PR validation (unit tests)
+  # ===========================================================================
+  tier1-unit:
+    name: 'Tier 1: Unit Tests'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run unit test suite
+        run: python run_tests.py
+
+      - name: Run dashboard tests
+        run: python run_dashboard_tests.py
+
+  # ===========================================================================
+  # Tier 2: Nightly soak — full test suite + 5x repetition
+  # ===========================================================================
+  tier2-nightly-soak:
+    name: 'Tier 2: Nightly Soak'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run full test suite (5x repetition)
+        run: |
+          for i in 1 2 3 4 5; do
+            echo "=== Tier 2 iteration $i/5 ==="
+            python run_tests.py || exit 1
+          done
+
+      - name: Check for memory leaks
+        run: |
+          python -c "
+          from lupa import LuaRuntime
+          lua = LuaRuntime(unpack_returned_tuples=True)
+          lua.execute('package.path = \"./src/?.lua;./?.lua;./tests/?.lua;./tests/?/init.lua;\" .. package.path')
+          lua.execute('require(\"tests.helpers.assertions\"); require(\"tests.helpers.mock_env\").setup()')
+          lua.execute('collectgarbage(\"collect\"); before = collectgarbage(\"count\")')
+          lua.execute('require(\"tests.test_soak\")')
+          lua.execute('collectgarbage(\"collect\"); after = collectgarbage(\"count\")')
+          delta = lua.eval('after - before')
+          print('GC memory: before={:.1f} KB, after={:.1f} KB, delta={:.1f} KB'.format(
+              lua.eval('before'), lua.eval('after'), delta))
+          if delta > lua.eval('before') * 0.15:
+              print('WARNING: Memory growth exceeds 15% threshold')
+          "
+
+  # ===========================================================================
+  # Tier 3: Extended soak (1K micro-jobs) + profiling + performance report
+  # ===========================================================================
+  tier3-extended-soak:
+    name: 'Tier 3: Extended Soak + Profiling'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: |
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && !inputs.skip_tier3)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install lupa
+
+      - name: Run Tier 3 test suite
+        run: python tests/run_tier3.py
+
+      - name: Upload performance report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier3-performance-report
+          path: tier3-performance-report.json
+          retention-days: 30
+
+  # ===========================================================================
+  # Failure notification
+  # ===========================================================================
+  notify-failure:
+    name: 'Notify Failure'
+    runs-on: ubuntu-latest
+    needs: [tier2-nightly-soak, tier3-extended-soak]
+    if: failure() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    steps:
+      - name: Log failure summary
+        run: |
+          echo "AE2-ES CI Tier 2/3 failure detected"
+          echo "  Tier 2: ${{ needs.tier2-nightly-soak.result }}"
+          echo "  Tier 3: ${{ needs.tier3-extended-soak.result }}"
