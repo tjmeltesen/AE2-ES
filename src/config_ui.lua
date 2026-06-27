@@ -271,13 +271,14 @@ end
 -- @param fg     number  optional foreground color
 -- @param bg     number  optional background color
 function ConfigUI:_writeAt(x, y, text, fg, bg)
-  -- Always print as terminal fallback first (safe)
-  print(text)
+  -- Guard against non-string values (OC io.write rejects tables/nil)
+  local s = tostring(text or "")
+  print(s)
   -- Then try GPU rendering
   if self._gpu and self._gpu.set then
     if fg then self:_setFG(fg) end
     if bg then self:_setBG(bg) end
-    pcall(self._gpu.set, self._gpu, x, y, text)
+    pcall(self._gpu.set, self._gpu, x, y, s)
     self:_resetColor()
   end
 end
@@ -355,7 +356,7 @@ end
 -- @return string  user input (or default if empty)
 function ConfigUI:_readLine(prompt, default)
   -- Uses io.read() — simpler and more reliable on OC than term key events
-  if prompt then io.write(prompt) end
+  if prompt then io.write(tostring(prompt)) end
   io.flush()
   local input = io.read()
   if input and #input > 0 then
