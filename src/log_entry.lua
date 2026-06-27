@@ -41,7 +41,7 @@ function LogEntry.new(originId, severity, message, jobId)
   self.originId = originId
   self.severity = severity
   self.message = message
-  self.jobId = (jobId ~= nil and jobId ~= "") and jobId or nil
+  self.jobId = jobId or nil
   return self
 end
 
