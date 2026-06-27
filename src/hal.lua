@@ -10,7 +10,7 @@ checkMaintenanceState) into OC component API calls. Provides:
   2. Capability flags — bitmask per machine type describing what it supports.
   3. Inventory/fluid transfer — wraps transposer with error handling + yield.
   4. Maintenance state checking — structured health report from poll results.
-  5. Side resolution — maps logical roles (inputBus, outputBus, etc.) to
+  5. Side resolution — maps logical roles (inputBus, inputHatch, etc.) to
      side constants, configurable per broker.
 
 Dependencies: OC component, sides, transposer libraries
@@ -235,8 +235,8 @@ end
 -- ===========================================================================
 
 --- Resolve a logical role name to a side constant.
--- @param role  string — one of "inputBus", "outputBus", "inputHatch",
---              "outputHatch", "interface", "centralBuffer"
+-- @param role  string — one of "inputBus", "inputHatch",
+--              "itemBuffer", "fluidBuffer", "transposerInput", "transposerOutput"
 -- @return number (side constant) or nil if role unknown
 function HAL:resolveSide(role)
   local side = self._sideMap[role]
