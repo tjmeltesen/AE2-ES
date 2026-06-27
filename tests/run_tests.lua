@@ -25,6 +25,7 @@ local standaloneTests = {
   "JobQueue_test.lua",
   "ttd_tracker_test.lua",
   "tests/test_logger_io.lua",
+  "tests/test_logger_core.lua",
 }
 
 -- Setup package path to include project root
