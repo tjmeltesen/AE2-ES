@@ -1,0 +1,37 @@
+# AE2-ES CI Pipeline
+# Tier 1: OC Emulator unit tests (stateless, fast) via lupa/LuaJIT
+# Runs on every PR and push to main
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs for the same branch/PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tier1-unit:
+    name: "Tier 1 — Unit Tests (lupa)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run unit test suite
+        run: python run_tests.py
+
+      - name: Run dashboard tests
+        run: python run_dashboard_tests.py
