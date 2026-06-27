@@ -9,6 +9,7 @@ local testFiles = {
   "tests.test_jit_db_cleanup",
   "tests.test_telemetry_serialization",
   "tests.test_malformed_payload",
+  "tests.test_integration",
 }
 
 -- Setup package path to include project root

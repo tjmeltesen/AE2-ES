@@ -150,4 +150,30 @@ function JobManifest:isJITCleaned()
      and self._errorLog == nil
 end
 
+--- Get the age of this job in seconds
+--- @return number seconds since creation
+function JobManifest:age()
+  local now = os.epoch and os.epoch() or os.time()
+  return (now - self.createdAt) / (os.epoch and 1000 or 1)
+end
+
+--- Unbind all hardware from this job
+function JobManifest:unbindHardware()
+  self._hardwareBinds = {}
+end
+
+--- Fault this job with a reason
+--- @param reason string description of the fault (optional)
+function JobManifest:fault(reason)
+  self.state = STATE.FAULTED
+  if reason then
+    self.faultReason = reason
+    self:logError({
+      code = "FAULT",
+      message = reason,
+      timestamp = os.epoch and os.epoch() or os.time(),
+    })
+  end
+end
+
 return JobManifest

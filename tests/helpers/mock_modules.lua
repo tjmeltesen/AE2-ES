@@ -1,0 +1,406 @@
+-- mock_modules.lua
+-- Mock implementations of Exec Broker sub-modules for integration testing.
+-- Each mock records calls so tests can assert correct inter-module behavior.
+-- These are injected via config.modules when creating an ExecBroker.
+
+local MockModules = {}
+
+-- ===========================================================================
+-- MachineNode mock
+-- ===========================================================================
+MockModules.MachineNode = {}
+MockModules.MachineNode.__index = MockModules.MachineNode
+
+function MockModules.MachineNode.new(address, opts)
+  opts = opts or {}
+  local self = setmetatable({}, MockModules.MachineNode)
+  self._address = address
+  self._status = opts.status or "AVAILABLE"
+  self._faulted = opts.faulted or false
+  self._faultCode = opts.faultCode or 0
+  self._faultDesc = opts.faultDesc or ""
+  self._locked = false
+  self._activeJob = nil
+  self._machineType = opts.machineType or "basic"
+  -- _proxy: if nil, exec_broker assumes machine is always active.
+  -- Set to {} for default (active=true), or {isMachineActive=fn} for control.
+  self._proxy = opts.proxy
+  self.maintenanceFlags = opts.maintenanceFlags or {}
+  self._callLog = {}
+  self.id = opts.id or ("job_" .. address)
+  return self
+end
+
+function MockModules.MachineNode:_getProxy()
+  return self._proxy
+end
+
+function MockModules.MachineNode:isAvailable()
+  return self._status == "AVAILABLE" and not self._locked
+end
+
+function MockModules.MachineNode:lock()
+  if self._status ~= "AVAILABLE" or self._locked then return false end
+  self._locked = true
+  self._status = "LOCKED"
+  table.insert(self._callLog, "lock")
+  return true
+end
+
+function MockModules.MachineNode:unlock()
+  self._locked = false
+  table.insert(self._callLog, "unlock")
+end
+
+function MockModules.MachineNode:bindJob(job)
+  if not self._locked then return false end
+  self._activeJob = job
+  self._status = "PROCESSING"
+  table.insert(self._callLog, "bindJob")
+  return true
+end
+
+function MockModules.MachineNode:releaseJob()
+  self._activeJob = nil
+  self._status = "AVAILABLE"
+  self._locked = false
+  table.insert(self._callLog, "releaseJob")
+  return true
+end
+
+function MockModules.MachineNode:hasFault()
+  return self._faulted
+end
+
+function MockModules.MachineNode:clearFault()
+  self._faulted = false
+  self._faultCode = 0
+  self._faultDesc = ""
+  table.insert(self._callLog, "clearFault")
+end
+
+function MockModules.MachineNode:pollHardware()
+  table.insert(self._callLog, "pollHardware")
+  return { active = self._status == "PROCESSING", faulted = self._faulted }
+end
+
+function MockModules.MachineNode:flushInterface()
+  table.insert(self._callLog, "flushInterface")
+end
+
+function MockModules.MachineNode:getMachineType()
+  return self._machineType
+end
+
+function MockModules.MachineNode:toTelemetry()
+  return {
+    address = self._address,
+    status = self._status,
+    faulted = self._faulted,
+    activeJobId = self._activeJob and self._activeJob.id or nil,
+  }
+end
+
+function MockModules.MachineNode:injectFault(code, desc)
+  self._faulted = true
+  self._faultCode = code or 500
+  self._faultDesc = desc or "Injected fault"
+  self._status = "FAULTED"
+  self.maintenanceFlags = { code = code or 500, description = desc or "Injected fault" }
+  table.insert(self._callLog, "injectFault:" .. (code or 500))
+end
+
+-- ===========================================================================
+-- JobQueue mock
+-- ===========================================================================
+MockModules.JobQueue = {}
+MockModules.JobQueue.__index = MockModules.JobQueue
+
+function MockModules.JobQueue.new(maxSize)
+  local self = setmetatable({}, MockModules.JobQueue)
+  self._queue = {}
+  self._maxSize = maxSize or 64
+  self._pushCount = 0
+  self._popCount = 0
+  self._rejected = 0
+  return self
+end
+
+function MockModules.JobQueue:push(job)
+  if #self._queue >= self._maxSize then
+    self._rejected = self._rejected + 1
+    return false
+  end
+  table.insert(self._queue, job)
+  self._pushCount = self._pushCount + 1
+  return true
+end
+
+function MockModules.JobQueue:popNextAvailable()
+  -- Find first PENDING job
+  for i, job in ipairs(self._queue) do
+    if job.status == "PENDING" then
+      table.remove(self._queue, i)
+      self._popCount = self._popCount + 1
+      return job
+    end
+  end
+  return nil
+end
+
+function MockModules.JobQueue:length()
+  return #self._queue
+end
+
+function MockModules.JobQueue:peek()
+  return self._queue[1]
+end
+
+-- ===========================================================================
+-- HardwareAbstractionLayer (HAL) mock
+-- ===========================================================================
+MockModules.HAL = {}
+MockModules.HAL.__index = MockModules.HAL
+
+MockModules.HAL.CAP_FLUID_INPUT = "fluid_input"
+MockModules.HAL.CAP_FLUID_OUTPUT = "fluid_output"
+MockModules.HAL.CAP_ITEM_INPUT = "item_input"
+MockModules.HAL.CAP_ITEM_OUTPUT = "item_output"
+
+function MockModules.HAL.new(config)
+  local self = setmetatable({}, MockModules.HAL)
+  self._config = config or {}
+  self._sideMap = config and config.sideMap or {
+    centralBuffer = 3,  -- sides.front
+    interface    = 4,   -- sides.right
+    inputHatch   = 1,   -- sides.top
+    outputHatch  = 0,   -- sides.bottom
+    redstone     = 2,   -- sides.back
+  }
+  self._capabilities = config and config.capabilities or {
+    basic = { "item_input", "item_output" },
+    fluid = { "item_input", "item_output", "fluid_input", "fluid_output" },
+  }
+  self._lastError = nil
+  self._drainLog = {}
+  self._fluidLog = {}
+  self._redstoneCalls = {}
+  self._maintenanceChecks = {}
+  return self
+end
+
+function MockModules.HAL:resolveSide(name)
+  if not self._sideMap[name] then return nil end
+  return self._sideMap[name]
+end
+
+function MockModules.HAL:drainInventory(fromSide, toSide)
+  local entry = { from = fromSide, to = toSide, timestamp = os.time() }
+  table.insert(self._drainLog, entry)
+  return 64 -- pretend we moved 64 items
+end
+
+function MockModules.HAL:performFluidTransfer(fromSide, toSide)
+  local entry = { from = fromSide, to = toSide, timestamp = os.time() }
+  table.insert(self._fluidLog, entry)
+  return true, 1000 -- pretend we moved 1000 mB
+end
+
+function MockModules.HAL:getLastError()
+  return self._lastError
+end
+
+function MockModules.HAL:setLastError(err)
+  self._lastError = err
+end
+
+function MockModules.HAL:hasCapability(machineType, capability)
+  local caps = self._capabilities[machineType]
+  if not caps then return false end
+  for _, c in ipairs(caps) do
+    if c == capability then return true end
+  end
+  return false
+end
+
+function MockModules.HAL:checkMaintenanceState(machine)
+  table.insert(self._maintenanceChecks, { address = machine._address, timestamp = os.time() })
+  if machine._faulted then
+    return {
+      faulted = true,
+      faults = { { code = machine._faultCode or 500, description = machine._faultDesc or "Machine faulted" } }
+    }
+  end
+  return { faulted = false, faults = {} }
+end
+
+function MockModules.HAL:setRedstone(side, value)
+  table.insert(self._redstoneCalls, { side = side, value = value, timestamp = os.time() })
+end
+
+function MockModules.HAL:getRedstone(side)
+  -- Return the last value set for this side, or 0
+  for i = #self._redstoneCalls, 1, -1 do
+    if self._redstoneCalls[i].side == side then
+      return self._redstoneCalls[i].value
+    end
+  end
+  return 0
+end
+
+-- ===========================================================================
+-- MaintenanceReport mock
+-- ===========================================================================
+MockModules.MaintenanceReport = {}
+MockModules.MaintenanceReport.__index = MockModules.MaintenanceReport
+
+function MockModules.MaintenanceReport.new(address)
+  local self = setmetatable({}, MockModules.MaintenanceReport)
+  self._address = address
+  self.faultCode = 0
+  self.faultMsg = nil
+  self.isRepairable = true
+  self._log = {}
+  return self
+end
+
+function MockModules.MaintenanceReport:reportFault(code, description)
+  self.faultCode = code
+  self.faultMsg = description
+  table.insert(self._log, { type = "fault", code = code, description = description, timestamp = os.time() })
+end
+
+function MockModules.MaintenanceReport:clearFault(message)
+  self.faultCode = 0
+  self.faultMsg = nil
+  table.insert(self._log, { type = "clear", message = message, timestamp = os.time() })
+end
+
+function MockModules.MaintenanceReport:toHumanReadable(code)
+  local messages = {
+    [500] = "Internal machine error",
+    [501] = "Power loss detected",
+    [502] = "Input bus jammed",
+    [503] = "Output bus full",
+    [504] = "Transfer error",
+  }
+  return messages[code] or "Unknown fault code: " .. tostring(code)
+end
+
+-- ===========================================================================
+-- Modem mock for supervisor integration testing
+-- ===========================================================================
+MockModules.MockModem = {}
+MockModules.MockModem.__index = MockModules.MockModem
+
+function MockModules.MockModem.new()
+  local self = setmetatable({}, MockModules.MockModem)
+  self._openPorts = {}
+  self._sentMessages = {}
+  self._address = "mock-modem-001"
+  return self
+end
+
+function MockModules.MockModem:open(port)
+  self._openPorts[port] = true
+  return true
+end
+
+function MockModules.MockModem:close(port)
+  self._openPorts[port] = nil
+  return true
+end
+
+function MockModules.MockModem:isOpen(port)
+  return self._openPorts[port] == true
+end
+
+function MockModules.MockModem:send(address, port, ...)
+  table.insert(self._sentMessages, { address = address, port = port, data = {...} })
+  return true
+end
+
+function MockModules.MockModem:broadcast(port, ...)
+  table.insert(self._sentMessages, { address = "BROADCAST", port = port, data = {...} })
+  return true
+end
+
+-- ===========================================================================
+-- BufferSnapshot override for exec_broker compatibility
+-- The real exec_broker expects BufferSnapshot to have:
+--   .new(debounceWindow)
+--   :update(bufferData) -> bool
+--   :convertToManifest(index) -> manifest table
+--   :reset()
+--   :getSnapshotData() -> table { items, fluids }
+-- ===========================================================================
+MockModules.IntegrationSnapshot = {}
+MockModules.IntegrationSnapshot.__index = MockModules.IntegrationSnapshot
+
+-- We need to build this on top of the real BufferSnapshot from src/
+local RealBufferSnapshot = require("src.buffersnapshot")
+
+function MockModules.IntegrationSnapshot.new(debounceWindow)
+  local self = setmetatable({}, MockModules.IntegrationSnapshot)
+  self._debounceWindow = debounceWindow or 1.0
+  self._currentData = nil
+  self._stable = false
+  self._snapshotCount = 0
+  self._lastHash = nil
+  self._stableSince = nil
+  -- Use os.clock() for sub-second precision (overridden in tests)
+  self._clockFn = os.clock or os.time
+  return self
+end
+
+function MockModules.IntegrationSnapshot:update(bufferData)
+  self._snapshotCount = self._snapshotCount + 1
+  self._currentData = bufferData
+
+  -- Compute hash from buffer data
+  local hash = RealBufferSnapshot.generateChecksum(bufferData and bufferData.items or {})
+  local now = self._clockFn()
+
+  if self._lastHash and hash == self._lastHash and self._stableSince ~= nil then
+    local elapsed = now - self._stableSince
+    if elapsed >= self._debounceWindow then
+      self._stable = true
+      return true
+    end
+  elseif hash ~= self._lastHash then
+    self._stableSince = now
+    self._lastHash = hash
+    self._stable = false
+  else
+    self._stableSince = now
+    self._lastHash = hash
+  end
+
+  return false
+end
+
+function MockModules.IntegrationSnapshot:convertToManifest(index)
+  if not self._currentData then return nil end
+  local items = self._currentData.items or {}
+  local fluids = self._currentData.fluids or {}
+  local manifest = {
+    id = "job_" .. tostring(index or 0) .. "_" .. tostring(os.time()),
+    inputs = { items = items, fluids = fluids },
+    priority = 0,
+    createdAt = os.time(),
+    updatedAt = os.time(),
+  }
+  return manifest
+end
+
+function MockModules.IntegrationSnapshot:reset()
+  self._stable = false
+  self._lastHash = nil
+  self._stableSince = nil
+end
+
+function MockModules.IntegrationSnapshot:getSnapshotData()
+  return self._currentData
+end
+
+return MockModules
