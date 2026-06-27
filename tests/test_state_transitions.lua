@@ -248,25 +248,66 @@ local function mockGhostItemBuffer()
 end
 
 -- ---------------------------------------------------------------------------
--- BufferSnapshot Module (Minimal Implementation for Testing)
+-- BufferSnapshot — production module via src/buffersnapshot.lua
 -- ---------------------------------------------------------------------------
-local BufferSnapshot = {}
+-- Ensure src/ is on the package path so require resolves from project root
+package.path = "./src/?.lua;./?/init.lua;" .. package.path
 
-BufferSnapshot.DEBOUNCE_SECONDS = 1.0
+-- Polyfill bit32 for Lua 5.5+ where it's not built-in
+-- (production buffersnapshot.lua uses bit32.bxor / bit32.band for FNV-1a)
+if not bit32 then
+    bit32 = {
+        bxor = function(a, b)
+            if b == nil then return a end
+            local r = 0; local bit = 1
+            while a > 0 or b > 0 do
+                local ab = a % 2; local bb = b % 2
+                if ab ~= bb then r = r + bit end
+                a = math.floor(a / 2); b = math.floor(b / 2)
+                bit = bit * 2
+            end
+            return r
+        end,
+        band = function(a, b)
+            local r = 0; local bit = 1
+            while a > 0 and b > 0 do
+                if a % 2 == 1 and b % 2 == 1 then r = r + bit end
+                a = math.floor(a / 2); b = math.floor(b / 2)
+                bit = bit * 2
+            end
+            return r
+        end,
+    }
+end
+
+local ProdBufferSnapshot = require("buffersnapshot")
+
+-- Adapter: map the test's static API to the production object-oriented module.
+--   computeChecksum(buffer)   → delegates to ProdBufferSnapshot.generateChecksum
+--   isStable(hash, prev, secs) → hash-equality + debounce check
+--   toJobManifest(buf, id)     → flat manifest table (test-friendly shape)
+local BufferSnapshot = {
+    DEBOUNCE_SECONDS = 1.0,
+}
 
 function BufferSnapshot.computeChecksum(buffer)
-    if not buffer or not buffer.items then return "" end
-    local parts = {}
-    for _, item in ipairs(buffer.items) do
-        table.insert(parts, item.name .. ":" .. tostring(item.size))
+    if not buffer or not buffer.items or #buffer.items == 0 then
+        return "00000000"
     end
-    table.sort(parts)
-    return table.concat(parts, "|")
+    -- Build a simplified entry-per-item buffer so generateChecksum produces
+    -- a deterministic hash that actually depends on item content.
+    local itemBuffer = {}
+    for i, item in ipairs(buffer.items) do
+        itemBuffer[tostring(i)] = item
+    end
+    return ProdBufferSnapshot.generateChecksum(itemBuffer)
 end
 
 function BufferSnapshot.isStable(currentHash, previousHash, timeStable)
-    return currentHash == previousHash and currentHash ~= "" and
-           timeStable >= BufferSnapshot.DEBOUNCE_SECONDS
+    if previousHash == nil then return false end
+    if currentHash == "00000000" then return false end
+    if currentHash ~= previousHash then return false end
+    return timeStable >= BufferSnapshot.DEBOUNCE_SECONDS
 end
 
 function BufferSnapshot.toJobManifest(buffer, snapshotId)
@@ -275,7 +316,7 @@ function BufferSnapshot.toJobManifest(buffer, snapshotId)
         inputs = buffer.items,
         fluids = buffer.fluids or {},
         state = PHASE.BUFFERING,
-        snapshotHash = BufferSnapshot.computeChecksum(buffer),
+        snapshotHash = ProdBufferSnapshot.generateChecksum(buffer),
         allocatedMachines = {},
         transferComplete = false,
         processComplete = false,
@@ -294,7 +335,7 @@ run_test_suite("1. BUFFERING → LOGGING", function()
 
     -- 1.1: Empty buffer should NOT trigger
     local hash1 = BufferSnapshot.computeChecksum(mockEmptyBuffer())
-    assert_equals("", hash1, "Empty buffer → empty checksum")
+    assert_equals("00000000", hash1, "Empty buffer → sentinel checksum")
     assert_false(BufferSnapshot.isStable(hash1, hash1, 2.0),
         "Empty buffer NOT stable")
 
