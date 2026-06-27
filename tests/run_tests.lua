@@ -10,6 +10,7 @@ local testFiles = {
   "tests.test_telemetry_serialization",
   "tests.test_malformed_payload",
   "tests.test_soak",
+  "tests.test_timeslicescheduler",
 }
 
 -- Setup package path to include project root

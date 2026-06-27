@@ -85,6 +85,7 @@ test_files = [
     "tests.test_telemetry_serialization",
     "tests.test_malformed_payload",
     "tests.test_soak",
+    "tests.test_timeslicescheduler",
 ]
 
 print("\nAE2-ES Unit Test Suite (via lupa/Python)")
