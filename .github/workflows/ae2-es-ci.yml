@@ -148,14 +148,12 @@ jobs:
           java-version: "8"
           distribution: "temurin"
 
-      - name: Set up Gradle
+      - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "7.6"
 
       - name: Compile GameTest project
         working-directory: gametest
-        run: ./gradlew compileJava --no-daemon --stacktrace
+        run: gradle compileJava --no-daemon --stacktrace
 
       - name: Archive build output
         if: always()
