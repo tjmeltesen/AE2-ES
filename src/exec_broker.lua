@@ -481,10 +481,11 @@ function ExecBroker:_transferForJob(addr, active)
 
     if hasFluidCap then
       local fromHatchSide = self._hal:resolveSide("inputHatch")
-      local toHatchSide   = self._hal:resolveSide("outputHatch")
-      -- Transfer fluids from central buffer's fluid hatch to machine
-      if fromHatchSide and toHatchSide then
-        self._hal:performFluidTransfer(fromHatchSide, toHatchSide)
+      -- Fluid enters machine via input hatch (auto-delivered by ender fluid conduit)
+      -- Output returns to separate network — no outputHatch needed here
+      local toHatchSide   = self._hal:resolveSide("fluidBuffer")
+      if fromHatchSide then
+        self._hal:performFluidTransfer(fromHatchSide, toHatchSide or fromHatchSide)
       end
     end
   end
