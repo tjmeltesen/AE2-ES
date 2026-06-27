@@ -88,6 +88,7 @@ local DEFAULT_MODULES = {
 --   machineTransposers — table, {[laneId] = {dualInterface, transposerAddr, machineAddr, pull, push, return}}
 --   itemBufferAddr   — string, drawer controller address (global item buffer)
 --   fluidBufferAddr  — string, fluid hatch address (global fluid buffer)
+--   databaseAddr     — string, OC database address (item stack data for transfer)
 --   halConfig        — table, passed to HAL:new() (sideMap, cacheTTL, etc.)
 --   queueSize        — number, max JobQueue size (default 64)
 --   bufferFeeder     — function() -> bufferData, for reading item/fluid buffers
@@ -205,6 +206,7 @@ function ExecBroker.new(config)
     _machineTransposers = config.machineTransposers or {},
     _itemBufferAddr  = config.itemBufferAddr or "",
     _fluidBufferAddr = config.fluidBufferAddr or "",
+    _databaseAddr    = config.databaseAddr or "",
 
     -- I/O
     _bufferFeeder    = config.bufferFeeder,

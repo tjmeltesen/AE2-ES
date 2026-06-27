@@ -73,6 +73,7 @@ local DEFAULT_CONFIG = {
   centralBufferAddr = "",  -- deprecated, kept for migration
   itemBufferAddr = "",     -- drawers/storage for items
   fluidBufferAddr = "",    -- hatches/tanks for fluids
+  databaseAddr    = "",    -- OC database (stores item stack data for transfer)
   -- Per-lane transposer config (set during machine config)
   -- { [laneName] = { dualInterface, transposerAddr, machineAddr, pull, push, return } }
   machineTransposers = {},
@@ -1097,6 +1098,19 @@ function ConfigUI:runSetupWizard()
   local hatchAddr = self:_readLine("Fluid buffer address (hatch, or skip): ", "")
   self._config.fluidBufferAddr = hatchAddr
 
+  -- Step 5c: Database
+  self:_clear()
+  self:_drawTitle("Step 5c: Database")
+  self:_writeLine(3, "The OC database stores item stack information.", COLOR_CYAN)
+  self:_writeLine(4, "The broker reads available items from this database")
+  self:_writeLine(5, "and sets them into each lane's dual interface.")
+  self:_writeLine(6, "")
+  self:_writeLine(7, "Required — the broker cannot transfer items without it.", COLOR_YELLOW)
+  self:_writeLine(8, "")
+
+  local dbAddr = self:_readLine("Database address: ", "")
+  self._config.databaseAddr = dbAddr
+
   -- Step 6: Lane configuration
   self:_clear()
   self:_drawTitle("Step 6: Lane Configuration")
@@ -1300,6 +1314,7 @@ function ConfigUI:_showConfigSummary()
   self:_writeLine(y, "  Redstone I/O:       " .. (cfg.redstoneAddress ~= "" and cfg.redstoneAddress or "(none)"), self:_statusColor(cfg.redstoneAddress)); y = y + 1
   self:_writeLine(y, "  Item Buffer:       " .. (cfg.itemBufferAddr ~= "" and cfg.itemBufferAddr or "(none)"), self:_statusColor(cfg.itemBufferAddr)); y = y + 1
   self:_writeLine(y, "  Fluid Buffer:      " .. (cfg.fluidBufferAddr ~= "" and cfg.fluidBufferAddr or "(none)"), self:_statusColor(cfg.fluidBufferAddr)); y = y + 1
+  self:_writeLine(y, "  Database:          " .. (cfg.databaseAddr ~= "" and cfg.databaseAddr or "(none)"), self:_statusColor(cfg.databaseAddr)); y = y + 1
   self:_writeLine(y, "  Lanes:              " .. tostring(#(cfg.machines or {})) .. " configured"); y = y + 1
   self:_writeLine(y, "  Poll Interval:      " .. tostring(cfg.pollInterval) .. "s"); y = y + 1
   self:_writeLine(y, "  Heartbeat Interval: " .. tostring(cfg.heartbeatInterval) .. "s"); y = y + 1
