@@ -930,7 +930,7 @@ function ConfigUI:_menuLoop(title, options)
     if input == "u" and scrollOffset > 0 then
       scrollOffset = math.max(0, scrollOffset - 1)
       os.sleep(0)
-      goto cycle
+      -- LuaJIT 5.1 compat: no goto — let while loop naturally restart
     end
     if input == "d" then
       local endIdx = math.min(#options, scrollOffset + maxVisible)
@@ -938,7 +938,7 @@ function ConfigUI:_menuLoop(title, options)
         scrollOffset = math.min(#options - maxVisible, scrollOffset + 1)
       end
       os.sleep(0)
-      goto cycle
+      -- LuaJIT 5.1 compat: no goto — let while loop naturally restart
     end
 
     do
@@ -956,7 +956,6 @@ function ConfigUI:_menuLoop(title, options)
     end
 
     os.sleep(0)
-    ::cycle::
   end
 
   return nil
@@ -1776,6 +1775,26 @@ function ConfigUI:run()
   else
     -- First-run: run setup wizard
     return self:runSetupWizard()
+  end
+end
+
+-- ===========================================================================
+-- Entry point — run as standalone script
+-- ===========================================================================
+-- When executed directly (not via require), launch the config UI.
+-- Wrapped in pcall for vanilla Lua environments (no os.sleep).
+if arg and (#arg == 0 or arg[0]:match("config_ui")) then
+  local ok, err = pcall(function()
+    local ui = ConfigUI:new()
+    local cfg = ui:run()
+    if cfg then
+      ui:saveConfig()
+      print("Configuration saved. Run exec_broker.lua to start the broker.")
+    end
+  end)
+  if not ok then
+    print("Config UI requires OpenComputers runtime (os.sleep, component API)")
+    print("Error: " .. tostring(err))
   end
 end
 

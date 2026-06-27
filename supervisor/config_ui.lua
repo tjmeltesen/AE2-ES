@@ -1083,4 +1083,21 @@ function ConfigUI.run_runtime_config()
     return instance:get_config()
 end
 
+-- ===========================================================================
+-- Entry point — run as standalone script
+-- ===========================================================================
+if arg and (#arg == 0 or arg[0]:match("config_ui")) then
+  local ok, err = pcall(function()
+    local cfg = ConfigUI.run_or_wizard()
+    if cfg then
+      ConfigUI.save_config(cfg)
+      print("Configuration saved. Run supervisor.lua to start the supervisor.")
+    end
+  end)
+  if not ok then
+    print("Supervisor Config UI requires OpenComputers runtime")
+    print("Error: " .. tostring(err))
+  end
+end
+
 return ConfigUI

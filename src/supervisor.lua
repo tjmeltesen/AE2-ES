@@ -602,6 +602,50 @@ end
 --- Module Exports
 --- ============================================================
 
+-- ===========================================================================
+-- Entry point — run as standalone script
+-- ===========================================================================
+-- When executed directly, load config (or run config UI) and start.
+-- Wrapped in pcall for vanilla Lua environments.
+if arg and (#arg == 0 or arg[0]:match("supervisor")) then
+  local ok, err = pcall(function()
+    local cfgPath = "/home/ae2es_supervisor.cfg"
+    local cfgFile = io.open(cfgPath, "r")
+    local config = nil
+
+    if cfgFile then
+      local raw = cfgFile:read("*a")
+      cfgFile:close()
+      local ok2, result = pcall(loadstring("return " .. raw))
+      if ok2 and type(result) == "table" then
+        config = result
+        print("Loaded config from " .. cfgPath)
+      end
+    end
+
+    if not config then
+      print("No config found. Running config UI first...")
+      local ConfigUI = require("supervisor.config_ui")
+      local cfg = ConfigUI.run_or_wizard()
+      if cfg then
+        ConfigUI.save_config(cfg)
+        config = cfg
+      end
+      if not config then
+        error("Configuration cancelled — cannot start supervisor without config")
+      end
+    end
+
+    local sv = Supervisor.new(config)
+    print("Starting Supervisor on port " .. (config.supervisorPort or 100))
+    sv:start()
+  end)
+  if not ok then
+    print("Supervisor requires OpenComputers runtime")
+    print("Error: " .. tostring(err))
+  end
+end
+
 return {
   Supervisor = Supervisor,
   TelemetryPayload = TelemetryPayload,
