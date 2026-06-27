@@ -26,6 +26,7 @@ local standaloneTests = {
   "JobManifest_test.lua",
   "JobQueue_test.lua",
   "ttd_tracker_test.lua",
+  "tests/test_logger_integration.lua",
   "tests/test_logger_io.lua",
   "tests/test_logger_core.lua",
 }

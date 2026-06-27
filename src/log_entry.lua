@@ -24,6 +24,17 @@ end
 
 LogEntry.SEVERITY = SEVERITY
 
+-- Numeric severity ordering (higher = more severe)
+local SEVERITY_ORDER = {
+  DEBUG    = 0,
+  INFO     = 1,
+  WARN     = 2,
+  ERROR    = 3,
+  CRITICAL = 4,
+}
+
+LogEntry.SEVERITY_ORDER = SEVERITY_ORDER
+
 -- Create a new LogEntry
 -- @param originId string  identifier of the source component
 -- @param severity  string  one of DEBUG/INFO/WARN/ERROR/CRITICAL
@@ -40,6 +51,7 @@ function LogEntry.new(originId, severity, message, jobId)
   self.timestamp = os.epoch and os.epoch() or os.time() * 1000
   self.originId = originId
   self.severity = severity
+  self.severityOrder = SEVERITY_ORDER[severity]
   self.message = message
   self.jobId = jobId or nil
   return self

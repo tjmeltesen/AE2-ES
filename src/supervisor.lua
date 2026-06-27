@@ -270,9 +270,16 @@ function Supervisor:_logMessage(level, message)
   end
 end
 
---- Get recent log entries.
---- @param count number|nil Number of entries to return (default: all)
---- @return table[]
+-- Public log entry method (called by GlobalLogger, dashboard, etc.)
+-- @param level string Log level (DEBUG, INFO, WARN, ERROR, CRITICAL)
+-- @param message string Log message
+function Supervisor:logMessage(level, message)
+  self:_logMessage(level, message)
+end
+
+-- Get recent log entries.
+-- @param count number|nil Number of entries to return (default: all)
+-- @return table[]
 function Supervisor:getLog(count)
   if count and count < #self._log then
     local start = #self._log - count + 1
