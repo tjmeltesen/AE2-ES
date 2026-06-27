@@ -287,7 +287,7 @@ local ProdBufferSnapshot = require("buffersnapshot")
 --   isStable(hash, prev, secs) → hash-equality + debounce check
 --   toJobManifest(buf, id)     → flat manifest table (test-friendly shape)
 local BufferSnapshot = {
-    DEBOUNCE_SECONDS = 1.0,
+    DEBOUNCE_SECONDS = 1.5,
 }
 
 function BufferSnapshot.computeChecksum(buffer)
@@ -347,11 +347,11 @@ run_test_suite("1. BUFFERING → LOGGING", function()
 
     -- 1.3: 0.5s below threshold → NO transition
     assert_false(BufferSnapshot.isStable(hash2, hash2, 0.5),
-        "0.5s < 1.0s threshold → NO transition")
+        "0.5s < 1.5s threshold → NO transition")
 
-    -- 1.4: 1.0s at threshold → TRANSITION
-    assert_true(BufferSnapshot.isStable(hash2, hash2, 1.0),
-        "1.0s == threshold → transition")
+    -- 1.4: 1.5s at threshold → TRANSITION
+    assert_true(BufferSnapshot.isStable(hash2, hash2, 1.5),
+        "1.5s == threshold → transition")
 
     -- 1.5: 2.5s above threshold → TRANSITION
     assert_true(BufferSnapshot.isStable(hash2, hash2, 2.5),
@@ -372,8 +372,8 @@ run_test_suite("1. BUFFERING → LOGGING", function()
     local s2 = BufferSnapshot.computeChecksum(mockStableBuffer(4))
     clock:tick(0.6)
     assert_equals(s1, s2, "Consecutive snapshots match")
-    assert_true(BufferSnapshot.isStable(s2, s1, 1.1),
-        "1.1s matching snapshots → transition")
+    assert_true(BufferSnapshot.isStable(s2, s1, 1.5),
+        "1.5s matching snapshots → transition")
 
     -- 1.9: JobManifest preserves snapshot data
     local manifest = BufferSnapshot.toJobManifest(mockStableBuffer(4), "test_job_1")
@@ -860,13 +860,13 @@ run_test_suite("12. Debounce Timer Precision", function()
     end
 
     -- 12.2: At/above threshold
-    for _, t in ipairs({1.0, 1.001, 1.5, 2.0, 5.0, 10.0, 100.0}) do
+    for _, t in ipairs({1.5, 1.501, 2.0, 5.0, 10.0, 100.0}) do
         assert_true(BufferSnapshot.isStable("b", "b", t),
             tostring(t) .. "s >= " .. tostring(d) .. "s → trigger")
     end
 
     -- 12.3: Boundary precision
-    assert_true(BufferSnapshot.isStable("c", "c", 1.0 + 0.0000001), "Just above threshold → trigger")
+    assert_true(BufferSnapshot.isStable("c", "c", 1.5 + 0.0000001), "Just above threshold → trigger")
 
     -- 12.4: Negative time → no
     assert_false(BufferSnapshot.isStable("d", "d", -0.1), "Negative time → NO trigger")
