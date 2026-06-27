@@ -90,3 +90,32 @@ The Lua Exec Broker and Supervisor are NOT tested directly here (they run Lua co
 ## CI Integration
 
 See `.github/workflows/ae2-es-ci.yml` — the `tier2-horizon-qa-gametest` job runs these tests on PR to main.
+
+## Git Workflow
+
+All GameTest changes must follow the kanban PR protocol:
+
+```bash
+# 1. Stage and commit
+git add -A
+git commit -m "test: <description of GameTest changes>"
+
+# 2. Push branch (auto-created by kanban worktree)
+git push -u origin HEAD
+
+# 3. Create PR (must target main, never push directly)
+gh pr create --base main --head $(git branch --show-current) \
+  --title "test: <description>" \
+  --body "Closes kanban task. See board for details."
+
+# 4. Link PR in kanban comment
+hermes kanban comment <task-id> "PR: <url>"
+
+# 5. Only after PR is created and linked, mark task done
+```
+
+**Rules:**
+- NEVER push directly to main
+- All GameTest code goes through PR review
+- Include structure template files (`.json` + `.snbt`) in commits
+- Tag `ae2-es-reviewer-flash` for review on PRs
