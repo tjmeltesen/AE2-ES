@@ -101,6 +101,7 @@ standalone_tests = [
     "JobManifest_test.lua",
     "JobQueue_test.lua",
     "ttd_tracker_test.lua",
+    "tests/test_logger_io.lua",
 ]
 
 print("\nAE2-ES Unit Test Suite (via lupa/Python)")
