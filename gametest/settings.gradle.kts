@@ -20,6 +20,8 @@ pluginManagement {
     }
 }
 
+rootProject.name = "ae2esgametest"
+
 plugins {
     id("com.gtnewhorizons.gtnhsettingsconvention") version("2.0.24")
 }
