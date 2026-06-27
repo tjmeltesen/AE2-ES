@@ -132,7 +132,7 @@ do
     queueLength = 1,
   })
   local s = payload:serialize()
-  local f, err = load("return " .. s)
+  local f, err = (loadstring or load)("return " .. s)
   Assert.notNil(f, "Serialized string should be valid Lua: " .. tostring(err))
 end
 Assert.endTest()

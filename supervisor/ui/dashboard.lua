@@ -831,6 +831,7 @@ function Dashboard:render_broker_panel()
 
     local visible_start = self.broker_scroll
     local visible_max = 6  -- rows 5-10
+    local focus_row = nil
 
     for i = 1, visible_max do
         local data_idx = visible_start + i
@@ -879,6 +880,7 @@ function Dashboard:render_broker_panel()
 
             if is_selected then
                 -- selection highlight is already drawn via row_bg
+                focus_row = row_y
             end
         else
             -- Empty row
