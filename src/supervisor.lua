@@ -602,13 +602,6 @@ end
 --- Module Exports
 --- ============================================================
 
-return {
-  Supervisor = Supervisor,
-  TelemetryPayload = TelemetryPayload,
-  TelemetryQueue = TelemetryQueue,
-  CONFIG = CONFIG,
-}
-
 -- ===========================================================================
 -- Entry point — run as standalone script
 -- ===========================================================================
@@ -652,3 +645,10 @@ if arg and (#arg == 0 or arg[0]:match("supervisor")) then
     print("Error: " .. tostring(err))
   end
 end
+
+return {
+  Supervisor = Supervisor,
+  TelemetryPayload = TelemetryPayload,
+  TelemetryQueue = TelemetryQueue,
+  CONFIG = CONFIG,
+}
