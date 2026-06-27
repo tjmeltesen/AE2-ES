@@ -87,11 +87,18 @@ test_files = [
     "tests.test_integration",
     "tests.test_soak",
     "tests.test_timeslicescheduler",
+    "tests.test_state_transitions",
+    "tests.test_profiler",
+    "tests.unit.test_config_ui",
+    "tests.unit.test_supervisor_config_ui",
 ]
 
 # Run standalone test files (use dofile instead of require)
 standalone_tests = [
     "MaintenanceReport_test.lua",
+    "JobManifest_test.lua",
+    "JobQueue_test.lua",
+    "ttd_tracker_test.lua",
 ]
 
 print("\nAE2-ES Unit Test Suite (via lupa/Python)")
