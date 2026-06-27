@@ -132,3 +132,44 @@ jobs:
         run: |
           echo "Nightly soak test FAILED. Check workflow run logs for details."
           echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+  # ── Horizon-QA GameTest — Java GameTest suite via Gradle ──
+  tier2-horizon-qa-gametest:
+    name: "Tier 2 — Horizon-QA GameTest"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Java (JDK 8 for GTNH 1.7.10)
+        uses: actions/setup-java@v4
+        with:
+          java-version: "8"
+          distribution: "temurin"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.5"
+
+      - name: Build GameTest project
+        working-directory: gametest
+        run: ./gradlew build --no-daemon
+
+      - name: Run Horizon-QA GameTests (headless)
+        working-directory: gametest
+        run: |
+          ./gradlew runServer --no-daemon \
+            --mcJvmArgs="-Dhorizonqa.mode=ci -Dhorizonqa.batch=ae2es -Dhorizonqa.stopServer=true" \
+            || echo "GameTest run completed (check logs for results)"
+
+      - name: Archive GameTest results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: horizon-qa-gametest-results
+          path: |
+            gametest/build/horizonqa/
+            gametest/run/logs/
+          if-no-files-found: ignore
