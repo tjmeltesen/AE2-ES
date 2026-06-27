@@ -1611,7 +1611,8 @@ end
 function ConfigUI:_detectAndAddMachines()
   local detected = self:detectComponents()
   local existing = {}
-  for _, addr in ipairs(self._config.machines) do
+  for _, lane in ipairs(self._config.machines) do
+    local addr = lane.machineAddr or lane.address
     existing[addr] = true
   end
 
