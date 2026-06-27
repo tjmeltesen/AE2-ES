@@ -1779,4 +1779,18 @@ function ConfigUI:run()
   end
 end
 
+-- ===========================================================================
+-- Entry point — run as standalone script
+-- ===========================================================================
+-- When executed directly (not via require), launch the config UI.
+-- OC convention: the argument table is populated when run as a script.
+if arg and (#arg == 0 or arg[0]:match("config_ui")) then
+  local ui = ConfigUI:new()
+  local cfg = ui:run()
+  if cfg then
+    ui:saveConfig()
+    print("Configuration saved. Run exec_broker.lua to start the broker.")
+  end
+end
+
 return ConfigUI
