@@ -111,6 +111,9 @@ function LogExporter:flushToHDD()
     return false
   end
 
+  -- Ensure log directory exists
+  self:_ensureLogDir()
+
   -- Check and perform disk rotation if needed
   self:_checkRotation()
 
@@ -170,6 +173,23 @@ end
 -- ===========================================================================
 -- Internal helpers
 -- ===========================================================================
+
+--- Ensure the log directory exists, creating it if necessary.
+-- On OC, uses filesystem.makeDirectory; on vanilla Lua, io.open creates files only.
+function LogExporter:_ensureLogDir()
+  local dir = DEFAULT_LOG_DIR
+  -- Try OC filesystem API first
+  local fs = self._filesystem or (pcall(require, "filesystem") and require("filesystem"))
+  if fs and fs.exists then
+    local exists = fs.exists(dir)
+    if not exists then
+      local ok, err = pcall(fs.makeDirectory, dir)
+      if not ok then
+        -- Silently fail — log file write will report the error
+      end
+    end
+  end
+end
 
 --- Format a log entry as a single text line for disk writing.
 -- Format:  [timestamp] SEVERITY  originId  message

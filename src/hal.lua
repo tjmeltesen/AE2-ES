@@ -10,7 +10,7 @@ checkMaintenanceState) into OC component API calls. Provides:
   2. Capability flags — bitmask per machine type describing what it supports.
   3. Inventory/fluid transfer — wraps transposer with error handling + yield.
   4. Maintenance state checking — structured health report from poll results.
-  5. Side resolution — maps logical roles (inputBus, outputBus, etc.) to
+  5. Side resolution — maps logical roles (inputBus, inputHatch, etc.) to
      side constants, configurable per broker.
 
 Dependencies: OC component, sides, transposer libraries
@@ -62,12 +62,14 @@ HAL.FAULT_PROXY_ERROR       = 8
 -- Default side mapping for logical roles
 -- ===========================================================================
 local DEFAULT_SIDE_MAP = {
-  inputBus    = sides.north,     -- Where items come in
-  outputBus   = sides.south,     -- Where finished items go out
-  inputHatch  = sides.west,      -- Where fluid comes in
-  outputHatch = sides.east,      -- Where fluid goes out
+  inputBus    = sides.north,     -- Where items come in (machine input bus)
+  inputHatch  = sides.west,      -- Where fluid comes in (machine input hatch)
   interface   = sides.top,       -- Adjacent ME Interface
-  centralBuffer = sides.bottom,  -- AE2 Dual Interface (central buffer)
+  itemBuffer  = sides.bottom,    -- Storage Drawers (item buffer)
+  fluidBuffer = sides.top,       -- Fluid Hatch (fluid buffer)
+  transposerInput  = sides.north,  -- Transposer pulls from drawer here
+  transposerOutput = sides.south,  -- Transposer drops into machine input bus
+  transposerReturn = sides.east,   -- Transposer pulls machine output → return chest
 }
 
 -- ===========================================================================
@@ -234,11 +236,20 @@ end
 -- ===========================================================================
 
 --- Resolve a logical role name to a side constant.
--- @param role  string — one of "inputBus", "outputBus", "inputHatch",
---              "outputHatch", "interface", "centralBuffer"
+-- @param role  string — one of "inputBus", "inputHatch",
+--              "itemBuffer", "fluidBuffer", "transposerInput", "transposerOutput",
+--              "transposerReturn"
 -- @return number (side constant) or nil if role unknown
 function HAL:resolveSide(role)
   local side = self._sideMap[role]
+  -- Fallbacks for renamed roles (itemBuffer → centralBuffer and vice versa)
+  if side == nil and role == "itemBuffer" then
+    side = self._sideMap["centralBuffer"]
+  elseif side == nil and role == "fluidBuffer" then
+    side = self._sideMap["centralBuffer"]  -- same physical side historically
+  elseif side == nil and role == "centralBuffer" then
+    side = self._sideMap["itemBuffer"]
+  end
   if side == nil then
     self._lastError = "HAL:resolveSide() — unknown role '" .. tostring(role) .. "'"
     return nil

@@ -84,12 +84,13 @@ local DEFAULT_MODULES = {
 --- Create a new ExecBroker instance.
 -- @param config  table with keys:
 --   brokerId         — string, unique broker identifier (required)
---   modules          — table, override for any module (optional, for testing)
---                       e.g. { JobManifest = myMockJobManifest }
---   machines         — table, address -> MachineNode (required)
+--   machines         — array, [{laneId, machineAddr, adapter}] (required)
+--   machineTransposers — table, {[laneId] = {adapter, dualInterface, transposerAddr, machineAddr, pull, push, return}}
+--   itemBufferAddr   — string, drawer controller address (global item buffer)
+--   fluidBufferAddr  — string, fluid hatch address (global fluid buffer)
 --   halConfig        — table, passed to HAL:new() (sideMap, cacheTTL, etc.)
 --   queueSize        — number, max JobQueue size (default 64)
---   bufferFeeder     — function() -> bufferData, for reading central buffer
+--   bufferFeeder     — function() -> bufferData, for reading item/fluid buffers
 --   modem            — table, modem component for telemetry (optional)
 --   telemetryPort    — number, modem port for broadcasts (default 123)
 --   pollInterval     — number, seconds between buffer polls (default 0.5)
@@ -130,11 +131,56 @@ function ExecBroker.new(config)
   -- Create JobQueue
   local queue = config.queue or M.JobQueue.new(config.queueSize or 64)
 
-  -- Maintenance reports: one per machine
+  -- Maintenance reports: one per lane (keyed by laneId)
   local reports = {}
-  for addr, _ in pairs(config.machines) do
-    reports[addr] = M.MaintenanceReport.new(addr)
+  local machineList = {}
+  local machinesByLane = {}
+
+  -- Backward compat: accept old {address -> MachineNode} dict or new [{laneId, ...}] array
+  local machineEntries
+  if config.machines[1] and type(config.machines[1]) == "table" then
+    -- New lane array format: [{laneId, machineAddr, adapter}]
+    machineEntries = config.machines
+  else
+    -- Old address->node dict: convert to lane array
+    machineEntries = {}
+    for addr, node in pairs(config.machines) do
+      table.insert(machineEntries, {
+        laneId = addr,
+        machineAddr = addr,
+        adapter = addr,
+        _node = node,
+      })
+    end
   end
+
+  for _, lane in ipairs(machineEntries) do
+    local laneId = lane.laneId
+    local machineAddr = lane.machineAddr or lane.address
+    local adapterAddr = lane.adapter or machineAddr
+
+    -- Use pre-built node if provided (backward compat), otherwise create one
+    local node = lane._node
+    if not node then
+      if M.MachineNode and type(M.MachineNode.new) == "function" then
+        node = M.MachineNode.new(machineAddr, {
+          machineType = "gt_machine",
+          hardwareAddress = machineAddr,
+          laneId = laneId,
+          adapter = adapterAddr,
+        })
+      else
+        node = { address = machineAddr, laneId = laneId, adapter = adapterAddr }
+      end
+    end
+
+    machinesByLane[laneId] = node
+    reports[laneId] = M.MaintenanceReport.new(laneId)
+    table.insert(machineList, { laneId = laneId, address = machineAddr, node = node })
+  end
+
+  -- Sort for deterministic iteration
+  table.sort(machineList, function(a, b) return a.laneId < b.laneId end)
 
   -- Logger for diagnostics and error tracking
   local BrokerLogger = config.logger or safeRequire("src.broker_logger")
@@ -142,15 +188,6 @@ function ExecBroker.new(config)
   if BrokerLogger and type(BrokerLogger.new) == "function" then
     logger = BrokerLogger.new(config.brokerId)
   end
-
-  -- Pre-compute machine array (ordered iteration)
-  local machineList = {}
-  for addr, node in pairs(config.machines) do
-    table.insert(machineList, { address = addr, node = node })
-  end
-
-  -- Sort for deterministic iteration
-  table.sort(machineList, function(a, b) return a.address < b.address end)
 
   local self = setmetatable({
     -- Identity
@@ -166,8 +203,11 @@ function ExecBroker.new(config)
     _logger          = logger,
 
     -- Hardware
-    _machines        = config.machines,
+    _machines        = machinesByLane,
     _machineList     = machineList,
+    _machineTransposers = config.machineTransposers or {},
+    _itemBufferAddr  = config.itemBufferAddr or "",
+    _fluidBufferAddr = config.fluidBufferAddr or "",
 
     -- I/O
     _bufferFeeder    = config.bufferFeeder,
@@ -182,7 +222,7 @@ function ExecBroker.new(config)
     _tickCount        = 0,
     _running          = true,
 
-    -- Active jobs: { [machineAddress] = { manifest, phase, assignedAt } }
+    -- Active jobs: { [laneId] = { manifest, phase, assignedAt } }
     _activeJobs       = {},
 
     -- Statistics
@@ -408,7 +448,7 @@ function ExecBroker:_transferForJob(addr, active)
   end
 
   -- Resolve sides: output from central buffer, input to machine interface
-  local fromSide = self._hal:resolveSide("centralBuffer")
+  local fromSide = self._hal:resolveSide("itemBuffer")
   local toSide   = self._hal:resolveSide("interface")
 
   if not fromSide or not toSide then
@@ -432,7 +472,7 @@ function ExecBroker:_transferForJob(addr, active)
   end
 
   -- Transfer fluids if the machine has fluid capabilities
-  local machine = self._machines[addr]
+  local machine = self._machines[addr] or self._machines[entry.laneId]
   if machine then
     local hasFluidCap = self._hal:hasCapability(
       machine:getMachineType(),
@@ -441,10 +481,11 @@ function ExecBroker:_transferForJob(addr, active)
 
     if hasFluidCap then
       local fromHatchSide = self._hal:resolveSide("inputHatch")
-      local toHatchSide   = self._hal:resolveSide("outputHatch")
-      -- Transfer fluids from central buffer's fluid hatch to machine
-      if fromHatchSide and toHatchSide then
-        self._hal:performFluidTransfer(fromHatchSide, toHatchSide)
+      -- Fluid enters machine via input hatch (auto-delivered by ender fluid conduit)
+      -- Output returns to separate network — no outputHatch needed here
+      local toHatchSide   = self._hal:resolveSide("fluidBuffer")
+      if fromHatchSide then
+        self._hal:performFluidTransfer(fromHatchSide, toHatchSide or fromHatchSide)
       end
     end
   end
@@ -497,7 +538,7 @@ end
 -- @param active  table   active job entry
 -- @return string  status
 function ExecBroker:_checkProcessingJob(addr, active)
-  local machine = self._machines[addr]
+  local machine = self._machines[addr] or self._machines[entry.laneId]
   if not machine then
     active.manifest:fault("Machine node missing for " .. addr)
     active.phase = ExecBroker.PHASES.CLEANUP
@@ -601,7 +642,7 @@ end
 -- @param addr    string  machine address
 -- @param active  table   active job entry
 function ExecBroker:_cleanupJob(addr, active)
-  local machine = self._machines[addr]
+  local machine = self._machines[addr] or self._machines[entry.laneId]
   local manifest = active.manifest
 
   -- Flush the ME interface (ghost-item cleanup)
@@ -657,7 +698,7 @@ function ExecBroker:_transmitTelemetry()
   -- Collect hardware matrix from MachineNodes
   local hwMatrix = {}
   for _, entry in ipairs(self._machineList) do
-    hwMatrix[entry.address] = entry.node:toTelemetry()
+    hwMatrix[entry.laneId] = entry.node:toTelemetry()
   end
 
   -- Collect alerts from all maintenance reports
@@ -886,7 +927,7 @@ end
 -- @param addr  string
 -- @return MachineNode or nil
 function ExecBroker:getMachine(addr)
-  return self._machines[addr]
+  return self._machines[laneId] or self._machines[addr]
 end
 
 --- Get all machine nodes.
@@ -919,7 +960,7 @@ end
 function ExecBroker:summarize()
   local machineStates = {}
   for _, entry in ipairs(self._machineList) do
-    machineStates[entry.address] = entry.node:toTelemetry()
+    machineStates[entry.laneId] = entry.node:toTelemetry()
   end
 
   local activeSummaries = {}
