@@ -1,0 +1,47 @@
+#!/bin/bash
+# AE2-ES Pre-Commit Hook
+# Runs Tier 1 unit tests and rejects commit on failure.
+# Requires: Python 3.11+, lupa installed.
+
+set -euo pipefail
+
+echo "AE2-ES Pre-Commit: Running Tier 1 unit tests..."
+
+# Determine project root (where .git is)
+PROJECT_ROOT="$(git rev-parse --show-toplevel)"
+cd "$PROJECT_ROOT"
+
+# Check Python availability
+if ! command -v python3 &>/dev/null && ! command -v python &>/dev/null; then
+  echo "ERROR: Python not found. Cannot run Tier 1 tests."
+  echo "Install Python 3.11+ and lupa to run pre-commit tests."
+  echo "To bypass (not recommended): git commit --no-verify"
+  exit 1
+fi
+
+PYTHON=$(command -v python3 || command -v python)
+
+# Check lupa is installed
+if ! "$PYTHON" -c "import lupa" 2>/dev/null; then
+  echo "ERROR: lupa not installed. Run: pip install lupa"
+  echo "To bypass (not recommended): git commit --no-verify"
+  exit 1
+fi
+
+# Run the test suite
+echo ""
+if "$PYTHON" run_tests.py; then
+  echo ""
+  echo "========================================"
+  echo "  Tier 1 Tests: PASSED"
+  echo "========================================"
+  exit 0
+else
+  echo ""
+  echo "========================================"
+  echo "  Tier 1 Tests: FAILED"
+  echo "========================================"
+  echo "Commit rejected. Fix test failures before committing."
+  echo "To bypass (not recommended): git commit --no-verify"
+  exit 1
+fi
