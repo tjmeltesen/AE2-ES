@@ -1303,7 +1303,7 @@ function ConfigUI:_showConfigSummary()
   self:_writeLine(y, "  Redstone I/O:       " .. (cfg.redstoneAddress ~= "" and cfg.redstoneAddress or "(none)"), self:_statusColor(cfg.redstoneAddress)); y = y + 1
   self:_writeLine(y, "  Item Buffer:       " .. (cfg.itemBufferAddr ~= "" and cfg.itemBufferAddr or "(none)"), self:_statusColor(cfg.itemBufferAddr)); y = y + 1
   self:_writeLine(y, "  Fluid Buffer:      " .. (cfg.fluidBufferAddr ~= "" and cfg.fluidBufferAddr or "(none)"), self:_statusColor(cfg.fluidBufferAddr)); y = y + 1
-  self:_writeLine(y, "  Machines:           " .. tostring(#(cfg.machines or {})) .. " configured"); y = y + 1
+  self:_writeLine(y, "  Lanes:              " .. tostring(#(cfg.machines or {})) .. " configured"); y = y + 1
   self:_writeLine(y, "  Poll Interval:      " .. tostring(cfg.pollInterval) .. "s"); y = y + 1
   self:_writeLine(y, "  Heartbeat Interval: " .. tostring(cfg.heartbeatInterval) .. "s"); y = y + 1
   self:_writeLine(y, "  Debounce Window:    " .. tostring(cfg.debounceWindow) .. "s"); y = y + 1
@@ -1311,10 +1311,16 @@ function ConfigUI:_showConfigSummary()
 
   if cfg.machines and #cfg.machines > 0 then
     y = y + 1
-    self:_writeLine(y, "  Machine Addresses:", COLOR_DIM); y = y + 1
-    for i, addr in ipairs(cfg.machines) do
-      local short = addr:sub(1, 24)
-      self:_writeLine(y, string.format("    %d. %s", i, short), COLOR_GRAY); y = y + 1
+    self:_writeLine(y, "  Lane Details:", COLOR_DIM); y = y + 1
+    for i, lane in ipairs(cfg.machines) do
+      local id = lane.laneId or ("#" .. i)
+      local addr = lane.machineAddr or lane.address or "(none)"
+      local transposer = ""
+      if cfg.machineTransposers and cfg.machineTransposers[id] then
+        local t = cfg.machineTransposers[id]
+        transposer = string.format(" [pull=%d push=%d ret=%d]", t.pull or 0, t.push or 0, t["return"] or 0)
+      end
+      self:_writeLine(y, string.format("    %s: %s%s", id, addr:sub(1, 20), transposer), COLOR_GRAY); y = y + 1
     end
   end
 end
