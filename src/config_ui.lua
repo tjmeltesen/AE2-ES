@@ -930,7 +930,7 @@ function ConfigUI:_menuLoop(title, options)
     if input == "u" and scrollOffset > 0 then
       scrollOffset = math.max(0, scrollOffset - 1)
       os.sleep(0)
-      goto cycle
+      -- LuaJIT 5.1 compat: no goto — let while loop naturally restart
     end
     if input == "d" then
       local endIdx = math.min(#options, scrollOffset + maxVisible)
@@ -938,7 +938,7 @@ function ConfigUI:_menuLoop(title, options)
         scrollOffset = math.min(#options - maxVisible, scrollOffset + 1)
       end
       os.sleep(0)
-      goto cycle
+      -- LuaJIT 5.1 compat: no goto — let while loop naturally restart
     end
 
     do
@@ -956,7 +956,6 @@ function ConfigUI:_menuLoop(title, options)
     end
 
     os.sleep(0)
-    ::cycle::
   end
 
   return nil
