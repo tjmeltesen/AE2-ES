@@ -807,9 +807,11 @@ function ConfigUI:buildExecConfig()
   -- Build machines table
   local machines = {}
   if cfg.machines then
-    for i, addr in ipairs(cfg.machines) do
+    for _, lane in ipairs(cfg.machines) do
+      local addr = lane.machineAddr or lane.address
+      local laneId = lane.laneId or addr
       if addr and addr ~= "" then
-        local machineType = (cfg.machineTypes and cfg.machineTypes[addr]) or "gt_machine"
+        local machineType = (cfg.machineTypes and cfg.machineTypes[laneId]) or "gt_machine"
         local proxy = nil
         if component then
           local ok, p = pcall(component.proxy, addr)
@@ -1521,7 +1523,8 @@ function ConfigUI:_editMachines()
     if count == 0 then
       self:_writeLine(5, "No machines configured.", COLOR_YELLOW)
     else
-      for i, addr in ipairs(self._config.machines) do
+      for _, lane in ipairs(self._config.machines) do
+        local addr = lane.machineAddr or lane.address or ""
         local mt = (self._config.machineTypes and self._config.machineTypes[addr]) or "basic"
         local mtLabel = ({
           [1] = "[Basic]", [4] = "[Fluid]", [32] = "[Steam]", [128] = "[Multi]"
@@ -1589,7 +1592,8 @@ function ConfigUI:_reorderMachines()
 
   self:_clear()
   self:_drawTitle("Reorder Machines")
-  for i, addr in ipairs(machines) do
+  for _, lane in ipairs(machines) do
+      local addr = lane.machineAddr or lane.address
     self:_writeLine(2 + i, string.format("  %d. %s", i, addr), COLOR_CYAN)
   end
 
@@ -1728,10 +1732,11 @@ function ConfigUI:_runConnectivityTest()
     y = y + 1
     self:_writeLine(y, "  Machines:", COLOR_DIM)
     y = y + 1
-    for i, addr in ipairs(self._config.machines) do
+    for _, lane in ipairs(self._config.machines) do
+      local addr = lane.machineAddr or lane.address or ""
       local mOk, mMsg = self:testComponent(addr)
-      table.insert(results, { name = "Machine " .. i, ok = mOk, msg = mMsg })
-      self:_writeLine(y, string.format("    %d. %s - %s", i,
+      table.insert(results, { name = "Machine " .. lane.laneId, ok = mOk, msg = mMsg })
+      self:_writeLine(y, string.format("    %s: %s - %s", lane.laneId or addr:sub(1,8),
         (mOk and "OK" or "FAIL"),
         mMsg:sub(1, 60)),
         mOk and COLOR_GREEN or COLOR_RED)
@@ -1787,9 +1792,10 @@ function ConfigUI:_showConnectionStatus()
 
   if count > 0 then
     y = y + 1
-    for i, addr in ipairs(self._config.machines) do
+    for _, lane in ipairs(self._config.machines) do
+      local addr = lane.machineAddr or lane.address or ""
       local short = addr:sub(1, 36)
-      self:_writeLine(y, string.format("    %d. %s", i, short), COLOR_GRAY)
+      self:_writeLine(y, string.format("    %s: %s", lane.laneId or ("#" .. _), short), COLOR_GRAY)
       y = y + 1
     end
   end
