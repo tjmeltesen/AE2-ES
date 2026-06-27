@@ -12,6 +12,7 @@ local testFiles = {
   "tests.test_integration",
   "tests.test_soak",
   "tests.test_timeslicescheduler",
+  "tests.test_state_transitions",
 }
 
 -- Setup package path to include project root
