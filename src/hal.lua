@@ -67,7 +67,9 @@ local DEFAULT_SIDE_MAP = {
   inputHatch  = sides.west,      -- Where fluid comes in
   outputHatch = sides.east,      -- Where fluid goes out
   interface   = sides.top,       -- Adjacent ME Interface
-  centralBuffer = sides.bottom,  -- AE2 Dual Interface (central buffer)
+  centralBuffer = sides.bottom,  -- (legacy) AE2 Dual Interface
+  itemBuffer   = sides.bottom,   -- Storage Drawers (item buffer)
+  fluidBuffer  = sides.top,      -- Fluid Hatch (fluid buffer)
 }
 
 -- ===========================================================================

@@ -46,7 +46,7 @@ local SIDES = { "bottom", "top", "back", "front", "left", "right" }
 -- HAL side role labels
 local HAL_ROLES = {
   "inputBus", "outputBus", "inputHatch", "outputHatch",
-  "interface", "centralBuffer",
+  "interface", "itemBuffer", "fluidBuffer",
 }
 
 -- Default side mapping (matches HAL defaults)
@@ -56,7 +56,9 @@ local DEFAULT_SIDE_MAP = {
   inputHatch  = 4,  -- west/left
   outputHatch = 5,  -- east/right
   interface   = 1,  -- top
-  centralBuffer = 0, -- bottom
+  centralBuffer = 0, -- bottom (legacy)
+  itemBuffer = 0, -- bottom (drawers for items)
+  fluidBuffer = 1, -- top (hatches for fluids)
 }
 
 -- Default configuration template
@@ -67,7 +69,9 @@ local DEFAULT_CONFIG = {
   machines          = {},
   machineTypes      = {},
   redstoneAddress   = "",
-  centralBufferAddr = "",
+  centralBufferAddr = "",  -- deprecated, kept for migration
+  itemBufferAddr = "",     -- drawers/storage for items
+  fluidBufferAddr = "",    -- hatches/tanks for fluids
   pollInterval      = 0.5,
   heartbeatInterval = 2.0,
   debounceWindow    = 1.5,
@@ -1066,37 +1070,27 @@ function ConfigUI:runSetupWizard()
   local rsAddr = self:_selectComponent("redstone", detected.redstone, "Select redstone block (or skip)")
   self._config.redstoneAddress = rsAddr
 
-  -- Step 5: Central buffer
+  -- Step 5a: Item Buffer (Drawers)
   self:_clear()
-  self:_drawTitle("Step 5: Central Buffer")
-  self:_writeLine(3, "The central buffer is the AE2 Dual Interface where items wait", COLOR_CYAN)
-  self:_writeLine(4, "before being dispatched to machines.")
-  self:_writeLine(5, "")
+  self:_drawTitle("Step 5: Item Buffer (Drawers)")
+  self:_writeLine(3, "The item buffer holds materials before dispatch to machines.", COLOR_CYAN)
+  self:_writeLine(4, "Typically a Storage Drawer Controller or chest of drawers.")
+  self:_writeLine(5, "Items are pulled from the ME network into these drawers.")
+  self:_writeLine(6, "")
 
-  if #detected.meInterfaces > 0 then
-    -- Pick from detected
-    self:_writeLine(6, "Detected ME Interfaces:")
-    for i, iface in ipairs(detected.meInterfaces) do
-      self:_writeLine(6 + i, string.format("  %d) %s", i, iface.address), COLOR_CYAN)
-    end
+  local drawerAddr = self:_readLine("Item buffer address (drawers, or skip): ", "")
+  self._config.itemBufferAddr = drawerAddr
 
-    local selected = nil
-    while selected == nil do
-      local input = self:_readLine("Select central buffer (number, or enter address manually): ")
-      local num = tonumber(input)
-      if num and num >= 1 and num <= #detected.meInterfaces then
-        selected = detected.meInterfaces[num].address
-      elseif input and #input > 0 then
-        selected = input
-      else
-        break
-      end
-    end
-    self._config.centralBufferAddr = selected or ""
-  else
-    self:_writeLine(6, "No ME Interfaces detected.", COLOR_YELLOW)
-    self._config.centralBufferAddr = self:_readLine("Central buffer address (or skip): ")
-  end
+  -- Step 5b: Fluid Buffer (Hatches)
+  self:_clear()
+  self:_drawTitle("Step 5b: Fluid Buffer (Hatches)")
+  self:_writeLine(3, "The fluid buffer holds liquids before dispatch to machines.", COLOR_CYAN)
+  self:_writeLine(4, "Typically a Fluid Hatch or tank adjacent to the computer.")
+  self:_writeLine(5, "Fluids are pumped from the ME network into these hatches.")
+  self:_writeLine(6, "")
+
+  local hatchAddr = self:_readLine("Fluid buffer address (hatch, or skip): ", "")
+  self._config.fluidBufferAddr = hatchAddr
 
   -- Step 6: Machine configuration
   self:_clear()
@@ -1248,7 +1242,8 @@ function ConfigUI:_showConfigSummary()
   self:_writeLine(y, "  Modem:              " .. (cfg.modemAddress ~= "" and cfg.modemAddress or "(none)"), self:_statusColor(cfg.modemAddress)); y = y + 1
   self:_writeLine(y, "  Telemetry Port:     " .. tostring(cfg.telemetryPort)); y = y + 1
   self:_writeLine(y, "  Redstone I/O:       " .. (cfg.redstoneAddress ~= "" and cfg.redstoneAddress or "(none)"), self:_statusColor(cfg.redstoneAddress)); y = y + 1
-  self:_writeLine(y, "  Central Buffer:     " .. (cfg.centralBufferAddr ~= "" and cfg.centralBufferAddr or "(none)"), self:_statusColor(cfg.centralBufferAddr)); y = y + 1
+  self:_writeLine(y, "  Item Buffer:       " .. (cfg.itemBufferAddr ~= "" and cfg.itemBufferAddr or "(none)"), self:_statusColor(cfg.itemBufferAddr)); y = y + 1
+  self:_writeLine(y, "  Fluid Buffer:      " .. (cfg.fluidBufferAddr ~= "" and cfg.fluidBufferAddr or "(none)"), self:_statusColor(cfg.fluidBufferAddr)); y = y + 1
   self:_writeLine(y, "  Machines:           " .. tostring(#(cfg.machines or {})) .. " configured"); y = y + 1
   self:_writeLine(y, "  Poll Interval:      " .. tostring(cfg.pollInterval) .. "s"); y = y + 1
   self:_writeLine(y, "  Heartbeat Interval: " .. tostring(cfg.heartbeatInterval) .. "s"); y = y + 1
@@ -1302,7 +1297,8 @@ function ConfigUI:runConfigMenu()
       { label = "Broker Identity",              action = "broker_id" },
       { label = "Modem & Telemetry",            action = "modem" },
       { label = "Redstone I/O Block",           action = "redstone" },
-      { label = "Central Buffer",               action = "buffer" },
+      { label = "Item Buffer (Drawers)",          action = "item_buffer" },
+      { label = "Fluid Buffer (Hatches)",         action = "fluid_buffer" },
       { label = string.format("Machines [%d]", machineCount), action = "machines" },
       { label = "Timing & Queue",               action = "timing" },
       { label = "HAL Side Mappings",            action = "hal_sides" },
@@ -1335,8 +1331,10 @@ function ConfigUI:runConfigMenu()
       self:_editModem()
     elseif action == "redstone" then
       self:_editRedstone()
-    elseif action == "buffer" then
-      self:_editCentralBuffer()
+    elseif action == "item_buffer" then
+      self:_editItemBuffer()
+    elseif action == "fluid_buffer" then
+      self:_editFluidBuffer()
     elseif action == "machines" then
       self:_editMachines()
     elseif action == "timing" then
@@ -1408,15 +1406,27 @@ function ConfigUI:_editRedstone()
   end
 end
 
---- Edit central buffer address.
-function ConfigUI:_editCentralBuffer()
+--- Edit item buffer address (drawers).
+function ConfigUI:_editItemBuffer()
   self:_clear()
-  self:_drawTitle("Central Buffer")
-  self:_writeLine(3, "Current: " .. (self._config.centralBufferAddr ~= "" and self._config.centralBufferAddr or "(not configured)"), self:_statusColor(self._config.centralBufferAddr))
-  self:_writeLine(4, "This should be the ME Dual Interface address.", COLOR_GRAY)
-  local addr = self:_readLine("Central buffer address (or blank to keep): ")
-  if addr and #addr > 0 then
-    self._config.centralBufferAddr = addr
+  self:_drawTitle("Item Buffer (Drawers)")
+  self:_writeLine(3, "Current: " .. (self._config.itemBufferAddr ~= "" and self._config.itemBufferAddr or "(not configured)"), self:_statusColor(self._config.itemBufferAddr))
+  self:_writeLine(4, "Enter the address of your drawer controller or storage drawer.")
+  local addr = self:_readLine("Item buffer address (or blank to keep): ")
+  if addr ~= "" then
+    self._config.itemBufferAddr = addr
+  end
+end
+
+--- Edit fluid buffer address (hatches).
+function ConfigUI:_editFluidBuffer()
+  self:_clear()
+  self:_drawTitle("Fluid Buffer (Hatches)")
+  self:_writeLine(3, "Current: " .. (self._config.fluidBufferAddr ~= "" and self._config.fluidBufferAddr or "(not configured)"), self:_statusColor(self._config.fluidBufferAddr))
+  self:_writeLine(4, "Enter the address of your fluid hatch or tank.")
+  local addr = self:_readLine("Fluid buffer address (or blank to keep): ")
+  if addr ~= "" then
+    self._config.fluidBufferAddr = addr
   end
 end
 
@@ -1616,14 +1626,24 @@ function ConfigUI:_runConnectivityTest()
     rsOk and COLOR_GREEN or COLOR_RED)
   y = y + 1
 
-  -- Test central buffer
-  local bufOk, bufMsg = false, "Not configured"
-  if self._config.centralBufferAddr and self._config.centralBufferAddr ~= "" then
-    bufOk, bufMsg = self:testComponent(self._config.centralBufferAddr)
+  -- Test item buffer
+  local itemOk, itemMsg = true, "Not configured"
+  if self._config.itemBufferAddr and self._config.itemBufferAddr ~= "" then
+    itemOk, itemMsg = self:testComponent(self._config.itemBufferAddr)
   end
-  table.insert(results, { name = "Central Buffer", ok = bufOk, msg = bufMsg })
-  self:_writeLine(y, "  Central Buffer:  " .. (bufOk and "OK" or "FAIL") .. " - " .. bufMsg,
-    bufOk and COLOR_GREEN or COLOR_RED)
+  table.insert(results, { name = "Item Buffer (Drawers)", ok = itemOk, msg = itemMsg })
+
+  -- Test fluid buffer
+  local fluidOk, fluidMsg = true, "Not configured"
+  if self._config.fluidBufferAddr and self._config.fluidBufferAddr ~= "" then
+    fluidOk, fluidMsg = self:testComponent(self._config.fluidBufferAddr)
+  end
+  table.insert(results, { name = "Fluid Buffer (Hatches)", ok = fluidOk, msg = fluidMsg })
+  self:_writeLine(y, "  Item Buffer:        " .. (itemOk and "OK" or "FAIL") .. " - " .. itemMsg,
+    itemOk and COLOR_GREEN or COLOR_RED)
+  y = y + 1
+  self:_writeLine(y, "  Fluid Buffer:       " .. (fluidOk and "OK" or "FAIL") .. " - " .. fluidMsg,
+    fluidOk and COLOR_GREEN or COLOR_RED)
   y = y + 1
 
   -- Test each machine
@@ -1681,7 +1701,8 @@ function ConfigUI:_showConnectionStatus()
   showEntry("Broker ID:", self._config.brokerId)
   showEntry("Modem:", self._config.modemAddress)
   showEntry("Redstone:", self._config.redstoneAddress)
-  showEntry("Central Buffer:", self._config.centralBufferAddr)
+  showEntry("Item Buffer:", self._config.itemBufferAddr)
+  showEntry("Fluid Buffer:", self._config.fluidBufferAddr)
 
   y = y + 1
   local count = #(self._config.machines or {})
