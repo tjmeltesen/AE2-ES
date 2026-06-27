@@ -57,6 +57,7 @@ local PANEL_BROKERS  = "brokers"
 local PANEL_MATRIX   = "matrix"
 local PANEL_ALERTS   = "alerts"
 local PANEL_TTD      = "ttd"
+local PANEL_LOG      = "log"
 
 local PANEL_ORDER = { PANEL_BROKERS, PANEL_MATRIX, PANEL_ALERTS, PANEL_TTD }
 
@@ -380,6 +381,14 @@ function Dashboard.new(subscriber, matrix, ttd, alerts)
     self.flash_timer = 0.0     -- accumulates elapsed seconds for flash toggle
     self.flash_on = false      -- current flash toggle state
 
+    -- Log viewer state
+    self._logViewActive = false           -- toggle log viewer overlay
+    self._logScroll = 0                   -- scroll offset in log viewer
+    self._logFilterSeverity = nil         -- severity filter (nil = all)
+    self._logSearchText = ""              -- text search in log viewer
+    self._logSearchActive = false         -- if true, next keypress builds search
+    self._logSearchBuffer = ""            -- search text being typed
+  
     -- Cache: track last-rendered state for partial redraw optimization
     self._last_broker_count = 0
     self._last_alert_count = 0
@@ -504,6 +513,27 @@ function Dashboard:handle_input()
         return
     end
 
+    -- Log viewer navigation (overrides panel navigation when active)
+    if self._logViewActive then
+        if code == 200 then  -- Up arrow
+            self._logScroll = math.max(0, self._logScroll - 1)
+            self._last_frame_dirty = true
+            return
+        elseif code == 208 then  -- Down arrow
+            self._logScroll = self._logScroll + 1
+            self._last_frame_dirty = true
+            return
+        elseif code == 201 then  -- Page Up
+            self._logScroll = math.max(0, self._logScroll - 20)
+            self._last_frame_dirty = true
+            return
+        elseif code == 209 then  -- Page Down
+            self._logScroll = self._logScroll + 20
+            self._last_frame_dirty = true
+            return
+        end
+    end
+
     -- Navigation dispatch
     if char == "\t" then
         -- Tab: cycle focus forward
@@ -546,6 +576,59 @@ function Dashboard:handle_input()
 
     if upper == "Q" then
         self:stop()
+    elseif upper == "L" then
+        -- Toggle log viewer
+        self._logViewActive = not self._logViewActive
+        self._logScroll = 0
+        self._last_frame_dirty = true
+        -- Clear flash indicator when entering log view
+        if self.subscriber and self.subscriber._loggerAlertFlash then
+            self.subscriber._loggerAlertFlash = nil
+        end
+    elseif upper == "S" and self._logViewActive then
+        -- Cycle severity filter in log viewer
+        local severities = { "ALL", "CRITICAL", "ERROR", "WARN", "INFO", "DEBUG" }
+        local current_idx = 1
+        if self._logFilterSeverity then
+            for i, s in ipairs(severities) do
+                if s == self._logFilterSeverity then
+                    current_idx = i
+                    break
+                end
+            end
+        end
+        current_idx = current_idx + 1
+        if current_idx > #severities then current_idx = 1 end
+        self._logFilterSeverity = (severities[current_idx] == "ALL") and nil or severities[current_idx]
+        self._logScroll = 0
+        self._last_frame_dirty = true
+    elseif upper == "/" and self._logViewActive then
+        -- Enter search mode
+        self._logSearchActive = true
+        self._logSearchBuffer = ""
+        self._last_frame_dirty = true
+    elseif code == 28 then  -- Enter key
+        if self._logSearchActive then
+            -- Commit search
+            self._logSearchText = self._logSearchBuffer
+            self._logSearchActive = false
+            self._logScroll = 0
+            self._last_frame_dirty = true
+            return
+        end
+        self:activate()
+        self._last_frame_dirty = true
+        return
+    elseif self._logSearchActive then
+        -- Building search text
+        if code == 14 then  -- Backspace
+            self._logSearchBuffer = self._logSearchBuffer:sub(1, -2)
+            self._last_frame_dirty = true
+        elseif char then
+            self._logSearchBuffer = self._logSearchBuffer .. char
+            self._last_frame_dirty = true
+        end
+        return
     elseif upper == "A" then
         -- Acknowledge all alerts
         if self.alerts.acknowledgeAll then
@@ -747,11 +830,15 @@ function Dashboard:render_frame()
     -- Render all panels (each method checks dirty flag internally for
     -- partial updates, but for B5's initial implementation we do full
     -- redraw — OC GPU operations are fast enough at 2 FPS for 80x25).
-    self:render_header()
-    self:render_broker_panel()
-    self:render_matrix_panel()
-    self:render_alert_panel()
-    self:render_ttd_panel()
+    if self._logViewActive then
+      self:render_log_viewer()
+    else
+      self:render_header()
+      self:render_broker_panel()
+      self:render_matrix_panel()
+      self:render_alert_panel()
+      self:render_ttd_panel()
+    end
 
     -- After first frame, subsequent frames only mark dirty on state change
     self._last_frame_dirty = false
@@ -798,6 +885,14 @@ function Dashboard:render_header()
     gpu.setBackground(COLOR_HEADER_BG)
     gpu.setForeground(COLOR_DIM)
     gpu.set(TERM_COLS - #time_str, y, time_str)
+
+    -- Flash alert indicator on ERROR/CRITICAL
+    local flashAlert = self.subscriber and self.subscriber._loggerAlertFlash
+    if flashAlert and self.flash_on then
+        gpu.setBackground(COLOR_HEADER_BG)
+        gpu.setForeground(COLOR_CRITICAL)
+        gpu.set(TERM_COLS - #time_str - 12, y, " [!ALERT!] ")
+    end
 end
 
 --===========================================================================
@@ -1128,12 +1223,162 @@ function Dashboard:render_ttd_panel()
         draw_bar(gpu, bar_start_x, y, bar_width,
             data.level or 0, data.max or 100, ttd_color)
 
-        -- Level label (overlay on bar)
+    -- Level label (overlay on bar)
         gpu.setBackground(COLOR_TTD_BAR_BG)
         gpu.setForeground(ttd_color)
         local pct = data.max and data.max > 0 and math.floor((data.level / data.max) * 100) or 0
         local level_str = string.format(" %d%% ", pct)
         gpu.set(bar_start_x + math.floor(bar_width / 2) - 2, y, level_str)
+    end
+end
+
+--===========================================================================
+-- Log Viewer Panel (full-screen overlay, toggled with L key)
+--===========================================================================
+function Dashboard:render_log_viewer()
+    local gpu = self.gpu
+
+    -- Clear entire content area
+    fill_region(gpu, 1, 1, TERM_COLS, TERM_ROWS, COLOR_BG)
+
+    -- Title bar (row 1)
+    gpu.setBackground(COLOR_HEADER_BG)
+    gpu.setForeground(COLOR_TEXT)
+    local filter_label = self._logFilterSeverity or "ALL"
+    local search_label = (self._logSearchText ~= "") and (" /" .. self._logSearchText .. "/") or ""
+    local title = string.format(" LOG VIEWER [Filter: %s]%s", filter_label, search_label)
+    gpu.set(1, 1, title:sub(1, TERM_COLS - 1))
+
+    -- Keybind hints (right side of title bar)
+    gpu.setBackground(COLOR_HEADER_BG)
+    gpu.setForeground(COLOR_DIM)
+    gpu.set(TERM_COLS - 50, 1, "[L]Back [S]Filter [/]Search [Up/Dn]Scroll")
+
+    -- Separator
+    gpu.setBackground(COLOR_PANEL_BG)
+    gpu.setForeground(COLOR_PANEL_BORDER)
+    gpu.set(1, 2, string.rep("\140", TERM_COLS))
+
+    -- Column header (row 3)
+    gpu.setBackground(COLOR_PANEL_BG)
+    gpu.setForeground(COLOR_DIM)
+    gpu.set(1, 3, " #  TIME          SEVERITY   ORIGIN               MESSAGE")
+    gpu.setForeground(COLOR_PANEL_BORDER)
+    gpu.set(1, 4, string.rep("\140", TERM_COLS))
+
+    -- Get log entries from supervisor
+    local entries = {}
+    if self.subscriber and self.subscriber.getLog then
+        entries = self.subscriber:getLog()
+    end
+
+    -- Apply severity filter
+    if self._logFilterSeverity then
+        local filtered = {}
+        for _, e in ipairs(entries) do
+            if e.level == self._logFilterSeverity then
+                table.insert(filtered, e)
+            end
+        end
+        entries = filtered
+    end
+
+    -- Apply search filter
+    if self._logSearchText and self._logSearchText ~= "" then
+        local q = self._logSearchText:lower()
+        local filtered = {}
+        for _, e in ipairs(entries) do
+            local msg = (e.message or ""):lower()
+            if msg:find(q, 1, true) then
+                table.insert(filtered, e)
+            end
+        end
+        entries = filtered
+    end
+
+    -- Render log entries (rows 5-24 = 20 visible rows)
+    local visible_rows = 20
+    local log_y = 5
+
+    for i = 1, visible_rows do
+        local data_idx = self._logScroll + i
+        local row_y = log_y - 1 + i
+
+        if data_idx <= #entries then
+            local entry = entries[data_idx]
+
+            -- Format timestamp
+            local ts
+            if entry.timestamp then
+                local t = entry.timestamp
+                local h = math.floor(t / 3600) % 24
+                local m = math.floor((t % 3600) / 60)
+                local s = math.floor(t % 60)
+                ts = string.format("%02d:%02d:%02d", h, m, s)
+            else
+                ts = "--:--:--"
+            end
+
+            -- Severity color
+            local sev_color = color_for_alert_severity(entry.level)
+
+            -- Background
+            local row_bg = COLOR_PANEL_BG
+            fill_region(gpu, 1, row_y, TERM_COLS, 1, row_bg)
+
+            -- Row number
+            gpu.setBackground(row_bg)
+            gpu.setForeground(COLOR_DIM)
+            gpu.set(1, row_y, string.format("%-4d", entry.id or data_idx))
+
+            -- Timestamp
+            gpu.setForeground(COLOR_DIM)
+            gpu.set(5, row_y, ts)
+
+            -- Severity
+            gpu.setForeground(sev_color)
+            gpu.set(14, row_y, string.format("%-10s", entry.level or "INFO"))
+
+            -- Origin (parse from message for supervisor log format "[brokerId] msg")
+            local origin = ""
+            local display_message = entry.message or ""
+            local origin_end = display_message:find("] ")
+            if origin_end and display_message:sub(1, 1) == "[" then
+                origin = display_message:sub(2, origin_end - 1)
+                display_message = display_message:sub(origin_end + 2)
+            end
+
+            gpu.setForeground(origin ~= "" and COLOR_TEXT or COLOR_DIM)
+            gpu.set(24, row_y, string.format("%-20s", origin:sub(1, 20)))
+
+            -- Message
+            gpu.setForeground(COLOR_TEXT)
+            local msg_width = TERM_COLS - 45
+            gpu.set(45, row_y, display_message:sub(1, msg_width))
+
+        else
+            -- Empty row
+            fill_region(gpu, 1, row_y, TERM_COLS, 1, COLOR_PANEL_BG)
+            gpu.setBackground(COLOR_PANEL_BG)
+            gpu.setForeground(COLOR_DIM)
+            if i == 1 and #entries == 0 then
+                gpu.set(1, row_y, " No log entries" .. (self._logFilterSeverity and (" (filter: " .. self._logFilterSeverity .. ")") or ""))
+            end
+        end
+    end
+
+    -- Status bar (row 25)
+    fill_region(gpu, 1, TERM_ROWS, TERM_COLS, 1, COLOR_HEADER_BG)
+    gpu.setBackground(COLOR_HEADER_BG)
+    gpu.setForeground(COLOR_DIM)
+    local status = string.format(" %d entries | scroll: %d", #entries, self._logScroll)
+    gpu.set(1, TERM_ROWS, status)
+
+    -- Search input bar
+    if self._logSearchActive then
+        gpu.setBackground(COLOR_SELECTION)
+        gpu.setForeground(COLOR_TEXT)
+        gpu.set(45, TERM_ROWS, string.format("Search: %s_", self._logSearchBuffer))
     end
 end
 
