@@ -1,0 +1,22 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Minecraft
+run/
+logs/
+crash-reports/
+
+# Structure exports (built assets, not source)
+horizonqastructures/
+
+# OS
+.DS_Store
+Thumbs.db
