@@ -36,9 +36,10 @@ do
   end
 
   function serialization.unserialize(s)
-    -- Use load() for safe deserialization in Lua
+    -- Use load/loadstring for safe deserialization (Lua 5.1+ compatible)
     if not s or s == "" then return nil end
-    local f, err = load("return " .. s, "deserialize", "t", {})
+    local _load = loadstring or load
+    local f, err = _load("return " .. s, "deserialize")
     if not f then return nil, err end
     return pcall(f) and f() or nil
   end
