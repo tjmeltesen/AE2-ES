@@ -62,14 +62,13 @@ HAL.FAULT_PROXY_ERROR       = 8
 -- Default side mapping for logical roles
 -- ===========================================================================
 local DEFAULT_SIDE_MAP = {
-  inputBus    = sides.north,     -- Where items come in
-  outputBus   = sides.south,     -- Where finished items go out
-  inputHatch  = sides.west,      -- Where fluid comes in
-  outputHatch = sides.east,      -- Where fluid goes out
+  inputBus    = sides.north,     -- Where items come in (machine input bus)
+  inputHatch  = sides.west,      -- Where fluid comes in (machine input hatch)
   interface   = sides.top,       -- Adjacent ME Interface
-  centralBuffer = sides.bottom,  -- (legacy) AE2 Dual Interface
-  itemBuffer   = sides.bottom,   -- Storage Drawers (item buffer)
-  fluidBuffer  = sides.top,      -- Fluid Hatch (fluid buffer)
+  itemBuffer  = sides.bottom,    -- Storage Drawers (item buffer)
+  fluidBuffer = sides.top,       -- Fluid Hatch (fluid buffer)
+  transposerInput  = sides.north,  -- Transposer pulls from drawer here
+  transposerOutput = sides.south,  -- Transposer pushes into machine here
 }
 
 -- ===========================================================================

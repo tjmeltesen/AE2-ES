@@ -45,20 +45,20 @@ local SIDES = { "bottom", "top", "back", "front", "left", "right" }
 
 -- HAL side role labels
 local HAL_ROLES = {
-  "inputBus", "outputBus", "inputHatch", "outputHatch",
+  "inputBus", "inputHatch",
   "interface", "itemBuffer", "fluidBuffer",
+  "transposerInput", "transposerOutput",
 }
 
 -- Default side mapping (matches HAL defaults)
 local DEFAULT_SIDE_MAP = {
-  inputBus    = 3,  -- north/front
-  outputBus   = 2,  -- south/back
-  inputHatch  = 4,  -- west/left
-  outputHatch = 5,  -- east/right
+  inputBus    = 0,  -- bottom (items enter machine here)
+  inputHatch  = 4,  -- west/left (fluid enters machine here)
   interface   = 1,  -- top
-  centralBuffer = 0, -- bottom (legacy)
-  itemBuffer = 0, -- bottom (drawers for items)
-  fluidBuffer = 1, -- top (hatches for fluids)
+  itemBuffer  = 0,  -- bottom (drawers for items)
+  fluidBuffer = 1,  -- top (hatches for fluids)
+  transposerInput  = 2,  -- north/back (transposer pulls from drawer here)
+  transposerOutput = 3,  -- south/front (transposer pushes into machine here)
 }
 
 -- Default configuration template
@@ -72,6 +72,8 @@ local DEFAULT_CONFIG = {
   centralBufferAddr = "",  -- deprecated, kept for migration
   itemBufferAddr = "",     -- drawers/storage for items
   fluidBufferAddr = "",    -- hatches/tanks for fluids
+  -- Per-machine transposer sides (set during machine config)
+  machineTransposers = {},  -- { [address] = { inputSide, outputSide } }
   pollInterval      = 0.5,
   heartbeatInterval = 2.0,
   debounceWindow    = 1.5,
@@ -1108,6 +1110,7 @@ function ConfigUI:runSetupWizard()
       if self:_confirm(string.format("Add %s (%s)", entry.type, entry.address:sub(1, 8).."..."), true) then
         table.insert(self._config.machines, entry.address)
         self:_setupMachineType(entry.address)
+        self:_setupTransposerSides(entry.address)
       end
     end
   else
@@ -1121,6 +1124,7 @@ function ConfigUI:runSetupWizard()
     if addr and #addr > 0 then
       table.insert(self._config.machines, addr)
       self:_setupMachineType(addr)
+      self:_setupTransposerSides(addr)
     end
   end
 
@@ -1206,6 +1210,36 @@ function ConfigUI:_selectComponent(typeName, detected, prompt)
 
   addr = self:_readLine(string.format("%s (or skip): ", prompt))
   return addr
+end
+
+--- Configure transposer input/output sides for a machine.
+-- The transposer pulls items from the drawer on inputSide,
+-- and pushes items into the machine on outputSide.
+-- Output products return to a separate network (not configured here).
+-- @param address  string  machine component address
+function ConfigUI:_setupTransposerSides(address)
+  self:_clear()
+  self:_drawTitle("Transposer Configuration")
+  self:_writeLine(3, string.format("Machine: %s", address:sub(1, 16)), COLOR_CYAN)
+  self:_writeLine(4, "")
+  self:_writeLine(5, "The transposer has two sides:", COLOR_CYAN)
+  self:_writeLine(6, "  Input side  — where it PULLS items FROM the drawer", COLOR_GRAY)
+  self:_writeLine(7, "  Output side — where it PUSHES items INTO the machine", COLOR_GRAY)
+  self:_writeLine(8, "")
+  self:_writeLine(9, "Sides: 0=bottom, 1=top, 2=back, 3=front, 4=left, 5=right", COLOR_DIM)
+  self:_writeLine(10, "")
+
+  if not self._config.machineTransposers then
+    self._config.machineTransposers = {}
+  end
+
+  local inputSide = self:_readNumber("Transposer INPUT side (pulls from drawer)", 2, 0, 5)
+  local outputSide = self:_readNumber("Transposer OUTPUT side (pushes into machine)", 3, 0, 5)
+
+  self._config.machineTransposers[address] = {
+    inputSide = inputSide,
+    outputSide = outputSide,
+  }
 end
 
 --- Prompt user to set machine type and capability profile.
