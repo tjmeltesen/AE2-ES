@@ -55,12 +55,12 @@ jobs:
       - name: Run dashboard tests
         run: python run_dashboard_tests.py
 
-  # ── Tier 2: PR to main — performance profiling artifact ──
+  # ── Tier 2b: PR to main — performance profiling artifact (after GameTest) ──
   tier2-performance:
-    name: "Tier 2 — Performance Profile"
+    name: "Tier 2b — Performance Profile"
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
-    needs: tier1-tests
+    needs: tier2-horizon-qa-gametest
     steps:
       - uses: actions/checkout@v7
 
@@ -135,9 +135,10 @@ jobs:
 
   # ── Horizon-QA GameTest — Java compilation check (server run requires self-hosted runner) ──
   tier2-horizon-qa-gametest:
-    name: "Tier 2 — Horizon-QA GameTest (compile check)"
+    name: "Tier 2a — Horizon-QA GameTest (compile check)"
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    needs: tier1-tests
     if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v7
