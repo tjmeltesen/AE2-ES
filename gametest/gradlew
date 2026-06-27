@@ -1,0 +1,27 @@
+#!/bin/sh
+
+# Gradle wrapper script for AE2-ES GameTest suite
+# Downloads Gradle 7.6 which supports JDK 8 (required for Minecraft 1.7.10)
+
+GRADLE_VERSION="7.6"
+APP_HOME=$(cd "$(dirname "$0")" && pwd)
+WRAPPER_DIR="$APP_HOME/gradle/wrapper"
+GRADLE_USER_HOME="${GRADLE_USER_HOME:-$HOME/.gradle}"
+
+# Determine Java command
+if [ -n "$JAVA_HOME" ]; then
+    JAVACMD="$JAVA_HOME/bin/java"
+else
+    JAVACMD="java"
+fi
+
+# Download wrapper jar if missing
+WRAPPER_JAR="$WRAPPER_DIR/gradle-wrapper.jar"
+GRADLE_DIST="$GRADLE_USER_HOME/wrapper/dists/gradle-${GRADLE_VERSION}-bin"
+
+CLASSPATH="$WRAPPER_JAR"
+
+exec "$JAVACMD" \
+    -classpath "$CLASSPATH" \
+    org.gradle.wrapper.GradleWrapperMain \
+    "$@"
