@@ -1086,16 +1086,18 @@ end
 -- ===========================================================================
 -- Entry point — run as standalone script
 -- ===========================================================================
--- OC does not populate 'arg'. Always attempt to run; pcall handles errors.
-local _ep_ok, _ep_err = pcall(function()
-  local cfg = ConfigUI.run_or_wizard()
-  if cfg then
-    ConfigUI.save_config(cfg)
-    print("Configuration saved. Run supervisor.lua to start the supervisor.")
+-- Detects direct execution vs require() via package.loaded.
+if not package.loaded["supervisor.config_ui"] then
+  local _ep_ok, _ep_err = pcall(function()
+    local cfg = ConfigUI.run_or_wizard()
+    if cfg then
+      ConfigUI.save_config(cfg)
+      print("Configuration saved. Run supervisor.lua to start the supervisor.")
+    end
+  end)
+  if not _ep_ok and _ep_err then
+    print("Supervisor Config UI error: " .. tostring(_ep_err))
   end
-end)
-if not _ep_ok and not _ep_err then
-  -- Silently ignore: module was required()'d
 end
 
 return ConfigUI

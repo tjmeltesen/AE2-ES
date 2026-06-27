@@ -605,41 +605,43 @@ end
 -- ===========================================================================
 -- Entry point — run as standalone script
 -- ===========================================================================
--- OC does not populate 'arg'. Always attempt to run; pcall handles errors.
-local _ep_ok, _ep_err = pcall(function()
-  local cfgPath = "/home/ae2es_supervisor.cfg"
-  local cfgFile = io.open(cfgPath, "r")
-  local config = nil
+-- Detects direct execution vs require() via package.loaded.
+if not package.loaded["src.supervisor"] then
+  local _ep_ok, _ep_err = pcall(function()
+    local cfgPath = "/home/ae2es_supervisor.cfg"
+    local cfgFile = io.open(cfgPath, "r")
+    local config = nil
 
-  if cfgFile then
-    local raw = cfgFile:read("*a")
-    cfgFile:close()
-    local ok2, result = pcall(loadstring("return " .. raw))
-    if ok2 and type(result) == "table" then
-      config = result
-      print("Loaded config from " .. cfgPath)
+    if cfgFile then
+      local raw = cfgFile:read("*a")
+      cfgFile:close()
+      local ok2, result = pcall(loadstring("return " .. raw))
+      if ok2 and type(result) == "table" then
+        config = result
+        print("Loaded config from " .. cfgPath)
+      end
     end
-  end
 
-  if not config then
-    print("No config found. Running config UI first...")
-    local ConfigUI = require("supervisor.config_ui")
-    local cfg = ConfigUI.run_or_wizard()
-    if cfg then
-      ConfigUI.save_config(cfg)
-      config = cfg
-    end
     if not config then
-      error("Configuration cancelled — cannot start supervisor without config")
+      print("No config found. Running config UI first...")
+      local ConfigUI = require("supervisor.config_ui")
+      local cfg = ConfigUI.run_or_wizard()
+      if cfg then
+        ConfigUI.save_config(cfg)
+        config = cfg
+      end
+      if not config then
+        error("Configuration cancelled — cannot start supervisor without config")
+      end
     end
-  end
 
-  local sv = Supervisor.new(config)
-  print("Starting Supervisor on port " .. (config.supervisorPort or 100))
-  sv:start()
-end)
-if not _ep_ok and not _ep_err then
-  -- Silently ignore: module was required()'d
+    local sv = Supervisor.new(config)
+    print("Starting Supervisor on port " .. (config.supervisorPort or 100))
+    sv:start()
+  end)
+  if not _ep_ok and _ep_err then
+    print("Supervisor error: " .. tostring(_ep_err))
+  end
 end
 
 return {

@@ -172,7 +172,7 @@ function ConfigUI:_detectIO()
   -- Try real OC GPU + screen
   local component = self._component or safeRequire("component")
   local gpu
-  if component and component.isAvailable and component:isAvailable("gpu") then
+  if component and component.isAvailable and component.isAvailable("gpu") then
     gpu = component.gpu
   end
 
@@ -182,6 +182,10 @@ function ConfigUI:_detectIO()
       self._gpu = gpu
       self._screen = component.screen
       self._term = safeRequire("term")
+      -- Bind term to GPU for proper OC rendering
+      if self._term and self._term.bind and self._screen then
+        pcall(self._term.bind, self._gpu, self._screen)
+      end
       self._screenMode = "gpu"
       self._width, self._height = w, h
       return
@@ -206,14 +210,14 @@ end
 
 --- Clear the screen.
 function ConfigUI:_clear()
+  -- Always print some newlines for terminal fallback
+  print("\n\n\n")
+  -- Try GPU term clear
   if self._term then
-    self._term.clear()
+    pcall(self._term.clear)
     if self._term.setCursor then
-      self._term.setCursor(1, 1)
+      pcall(self._term.setCursor, 1, 1)
     end
-  else
-    -- Fallback: print blank lines
-    for _ = 1, 3 do print("") end
   end
 end
 
@@ -252,14 +256,14 @@ end
 -- @param fg     number  optional foreground color
 -- @param bg     number  optional background color
 function ConfigUI:_writeAt(x, y, text, fg, bg)
+  -- Always print as terminal fallback first (safe)
+  print(text)
+  -- Then try GPU rendering
   if self._gpu and self._gpu.set then
     if fg then self:_setFG(fg) end
     if bg then self:_setBG(bg) end
     pcall(self._gpu.set, self._gpu, x, y, text)
     self:_resetColor()
-  else
-    -- Terminal fallback: just print
-    print(text)
   end
 end
 
@@ -336,11 +340,27 @@ end
 -- @return string  user input (or default if empty)
 function ConfigUI:_readLine(prompt, default)
   if self._term and self._term.write and self._term.read then
+    -- OC term API: accumulate chars until Enter
     if prompt then self._term.write(prompt) end
-    local input = self._term.read()
-    if input and #input > 0 then
-      return input
+    local line = ""
+    while true do
+      local event, char, code = self._term.read()
+      if event == "key_down" then
+        if code == 28 or code == 156 then  -- Enter
+          self._term.write("\n")
+          break
+        elseif code == 14 then  -- Backspace
+          if #line > 0 then
+            line = line:sub(1, -2)
+            self._term.write("\8 \8")  -- erase last char
+          end
+        elseif char and #char > 0 then
+          line = line .. char
+          self._term.write(char)
+        end
+      end
     end
+    if #line > 0 then return line end
     return default or ""
   else
     io.write(prompt or "> ")
@@ -399,7 +419,13 @@ end
 function ConfigUI:_pressAnyKey()
   if self._term and self._term.read then
     self:_writeLine(self._height, "Press Enter to continue...")
-    self._term.read()
+    -- Wait for Enter key via OC term API
+    while true do
+      local event, _, code = self._term.read()
+      if event == "key_down" and (code == 28 or code == 156) then
+        break
+      end
+    end
   else
     self:_writeLine(0, "Press Enter to continue...")
     io.read()
@@ -1781,20 +1807,20 @@ end
 -- ===========================================================================
 -- Entry point — run as standalone script
 -- ===========================================================================
--- OC does not populate 'arg' like standard Lua. Always attempt to run;
--- pcall gracefully handles missing OC runtime. When required()'d as a
--- module, the entry point still fires briefly but the pcall catches the
--- early return — the caller still gets the ConfigUI table.
-local _ep_ok, _ep_err = pcall(function()
-  local ui = ConfigUI:new()
-  local cfg = ui:run()
-  if cfg then
-    ui:saveConfig()
-    print("Configuration saved. Run exec_broker.lua to start the broker.")
+-- Detects direct execution vs require() via package.loaded.
+-- OC does not populate 'arg'; package.loaded is set when require() loads us.
+if not package.loaded["src.config_ui"] then
+  local _ep_ok, _ep_err = pcall(function()
+    local ui = ConfigUI:new()
+    local cfg = ui:run()
+    if cfg then
+      ui:saveConfig()
+      print("Configuration saved. Run exec_broker.lua to start the broker.")
+    end
+  end)
+  if not _ep_ok and _ep_err then
+    print("Config UI error: " .. tostring(_ep_err))
   end
-end)
-if not _ep_ok and not _ep_err then
-  -- Silently ignore: module was required()'d, not run directly
 end
 
 return ConfigUI
