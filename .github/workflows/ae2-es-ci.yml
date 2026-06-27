@@ -133,11 +133,11 @@ jobs:
           echo "Nightly soak test FAILED. Check workflow run logs for details."
           echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
-  # ── Horizon-QA GameTest — Java GameTest suite via Gradle ──
+  # ── Horizon-QA GameTest — Java compilation check (server run requires self-hosted runner) ──
   tier2-horizon-qa-gametest:
-    name: "Tier 2 — Horizon-QA GameTest"
+    name: "Tier 2 — Horizon-QA GameTest (compile check)"
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v7
@@ -148,28 +148,19 @@ jobs:
           java-version: "8"
           distribution: "temurin"
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.5"
-
-      - name: Build GameTest project
-        working-directory: gametest
-        run: ./gradlew build --no-daemon
-
-      - name: Run Horizon-QA GameTests (headless)
+      - name: Build GameTest project (compilation check)
         working-directory: gametest
         run: |
-          ./gradlew runServer --no-daemon \
-            --mcJvmArgs="-Dhorizonqa.mode=ci -Dhorizonqa.batch=ae2es -Dhorizonqa.stopServer=true" \
-            || echo "GameTest run completed (check logs for results)"
+          # Generate Gradle wrapper if not present
+          if [ ! -f gradlew ]; then
+            gradle wrapper --gradle-version 8.5
+          fi
+          ./gradlew compileJava --no-daemon --stacktrace
 
-      - name: Archive GameTest results
+      - name: Archive build output
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: horizon-qa-gametest-results
-          path: |
-            gametest/build/horizonqa/
-            gametest/run/logs/
+          name: horizon-qa-gametest-build
+          path: gametest/build/
           if-no-files-found: ignore
