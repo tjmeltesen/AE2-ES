@@ -172,7 +172,7 @@ function ConfigUI:_detectIO()
   -- Try real OC GPU + screen
   local component = self._component or safeRequire("component")
   local gpu
-  if component and component.isAvailable and component:isAvailable("gpu") then
+  if component and component.isAvailable and component.isAvailable("gpu") then
     gpu = component.gpu
   end
 
