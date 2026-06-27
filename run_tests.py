@@ -89,6 +89,11 @@ test_files = [
     "tests.test_timeslicescheduler",
 ]
 
+# Run standalone test files (use dofile instead of require)
+standalone_tests = [
+    "MaintenanceReport_test.lua",
+]
+
 print("\nAE2-ES Unit Test Suite (via lupa/Python)")
 print("=" * 45)
 print()
@@ -101,6 +106,23 @@ for test_module in test_files:
     except Exception as e:
         print(f"  ERROR in {test_module}: {e}")
         all_passed = False
+
+# Run standalone test files (load module then dofile the test)
+import os
+for test_file in standalone_tests:
+    test_path = os.path.join(project_root, test_file)
+    if os.path.exists(test_path):
+        try:
+            # Determine the module file name from test file naming convention
+            mod_file = test_file.replace('_test.lua', '.lua').replace('-test.lua', '.lua')
+            mod_path = os.path.join(project_root, mod_file)
+            # Load module into global
+            lua.execute(f'MaintenanceReport = dofile({repr(mod_path)})')
+            # Run the test (it uses arg[1] or falls back to MaintenanceReport global)
+            lua.execute(f'dofile({repr(test_path)})')
+        except Exception as e:
+            print(f"  ERROR in {test_file}: {e}")
+            all_passed = False
 
 # Print summary
 try:
