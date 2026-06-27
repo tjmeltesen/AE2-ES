@@ -925,38 +925,40 @@ end
 -- ===========================================================================
 -- Entry point — run as standalone script
 -- ===========================================================================
--- OC does not populate 'arg'. Always attempt to run; pcall handles errors.
-local _ep_ok, _ep_err = pcall(function()
-  local cfgPath = "/home/ae2es_broker.cfg"
-  local cfgFile = io.open(cfgPath, "r")
-  local config = nil
+-- Detects direct execution vs require() via package.loaded.
+if not package.loaded["src.exec_broker"] then
+  local _ep_ok, _ep_err = pcall(function()
+    local cfgPath = "/home/ae2es_broker.cfg"
+    local cfgFile = io.open(cfgPath, "r")
+    local config = nil
 
-  if cfgFile then
-    local raw = cfgFile:read("*a")
-    cfgFile:close()
-    local ok2, result = pcall(loadstring("return " .. raw))
-    if ok2 and type(result) == "table" then
-      config = result
-      print("Loaded config from " .. cfgPath)
+    if cfgFile then
+      local raw = cfgFile:read("*a")
+      cfgFile:close()
+      local ok2, result = pcall(loadstring("return " .. raw))
+      if ok2 and type(result) == "table" then
+        config = result
+        print("Loaded config from " .. cfgPath)
+      end
     end
-  end
 
-  if not config then
-    print("No config found. Running config UI first...")
-    local ConfigUI = require("src.config_ui")
-    local ui = ConfigUI:new()
-    config = ui:run()
     if not config then
-      error("Configuration cancelled — cannot start broker without config")
+      print("No config found. Running config UI first...")
+      local ConfigUI = require("src.config_ui")
+      local ui = ConfigUI:new()
+      config = ui:run()
+      if not config then
+        error("Configuration cancelled — cannot start broker without config")
+      end
     end
-  end
 
-  local broker = ExecBroker.new(config)
-  print("Starting Exec Broker: " .. config.brokerId)
-  broker:run()
-end)
-if not _ep_ok and not _ep_err then
-  -- Silently ignore: module was required()'d
+    local broker = ExecBroker.new(config)
+    print("Starting Exec Broker: " .. config.brokerId)
+    broker:run()
+  end)
+  if not _ep_ok and _ep_err then
+    print("Exec Broker error: " .. tostring(_ep_err))
+  end
 end
 
 return ExecBroker

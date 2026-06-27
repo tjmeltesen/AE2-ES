@@ -1781,20 +1781,20 @@ end
 -- ===========================================================================
 -- Entry point — run as standalone script
 -- ===========================================================================
--- OC does not populate 'arg' like standard Lua. Always attempt to run;
--- pcall gracefully handles missing OC runtime. When required()'d as a
--- module, the entry point still fires briefly but the pcall catches the
--- early return — the caller still gets the ConfigUI table.
-local _ep_ok, _ep_err = pcall(function()
-  local ui = ConfigUI:new()
-  local cfg = ui:run()
-  if cfg then
-    ui:saveConfig()
-    print("Configuration saved. Run exec_broker.lua to start the broker.")
+-- Detects direct execution vs require() via package.loaded.
+-- OC does not populate 'arg'; package.loaded is set when require() loads us.
+if not package.loaded["src.config_ui"] then
+  local _ep_ok, _ep_err = pcall(function()
+    local ui = ConfigUI:new()
+    local cfg = ui:run()
+    if cfg then
+      ui:saveConfig()
+      print("Configuration saved. Run exec_broker.lua to start the broker.")
+    end
+  end)
+  if not _ep_ok and _ep_err then
+    print("Config UI error: " .. tostring(_ep_err))
   end
-end)
-if not _ep_ok and not _ep_err then
-  -- Silently ignore: module was required()'d, not run directly
 end
 
 return ConfigUI
