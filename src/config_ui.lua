@@ -346,7 +346,7 @@ end
 -- @param default string  optional default value
 -- @return string  user input (or default if empty)
 function ConfigUI:_readLine(prompt, default)
-  -- Prefer io.read() on OC — simpler and more reliable than term.read()
+  -- Uses io.read() — simpler and more reliable on OC than term key events
   if prompt then io.write(prompt) end
   io.flush()
   local input = io.read()
@@ -400,19 +400,9 @@ end
 
 --- Wait for a key press then return.
 function ConfigUI:_pressAnyKey()
-  if self._term and self._term.read then
-    self:_writeLine(self._height, "Press Enter to continue...")
-    -- Wait for Enter key via OC term API
-    while true do
-      local event, _, code = self._term.read()
-      if event == "key_down" and (code == 28 or code == 156) then
-        break
-      end
-    end
-  else
-    self:_writeLine(0, "Press Enter to continue...")
-    io.read()
-  end
+  io.write("Press Enter to continue...")
+  io.flush()
+  io.read()
 end
 
 --- Show a centered message and wait for confirmation.
