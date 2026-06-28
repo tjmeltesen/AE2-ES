@@ -1037,6 +1037,29 @@ function ConfigUI:buildExecConfig()
       return contents
     end
 
+    -- Fluid buffer reader: tank_controller API (getTankCount + getFluidInTank)
+    local function _readFluidBuffer(addr, side)
+      if not addr or addr == '' then return {} end
+      local ok, proxy = pcall(component.proxy, addr)
+      if not ok or not proxy then return {} end
+      local contents = {}
+      local tcOk, tankCount = pcall(proxy.getTankCount, proxy, side)
+      if tcOk and type(tankCount) == 'number' and tankCount > 0 then
+        for tank = 1, math.min(tankCount, 32) do
+          local flOk, fluid = pcall(proxy.getFluidInTank, proxy, side, tank)
+          if flOk and fluid and fluid.label then
+            local lvOk, level = pcall(proxy.getTankLevel, proxy, side, tank)
+            table.insert(contents, {
+              name = fluid.name or fluid.label or 'unknown',
+              label = fluid.label or 'unknown',
+              amount = (lvOk and level) or 0,
+            })
+          end
+        end
+      end
+      return contents
+    end
+
     bufferFeeder = function()
       local items = _readItemBuffer(ibAddr, itemSide)
       local fluids = _readFluidBuffer(fbAddr, fluidSide)
