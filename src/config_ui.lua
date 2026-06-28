@@ -846,10 +846,17 @@ function ConfigUI:_serializeValue(val)
   end
   if t == "string" then
     -- Escape control characters and backslashes
-    local escaped = val:gsub("\\", "\\\\"):gsub("\"", "\\\""):gsub("\n", "\\n"):gsub("\r", "\\r"):gsub("\t", "\\t")
+    local escaped = val:gsub("\\", "\\\\"):gsub("\"", "\\\""):gsub("\n", "\\n"):gsub("
+", "\
+"):gsub("\t", "\\t")
     return "\"" .. escaped .. "\""
   end
-  return "\"" .. tostring(val) .. "\""
+  -- Tables / functions / userdata — cannot serialize, return placeholder
+  if t == "table" then return "\"<table>\""
+  elseif t == "function" then return "\"<function>\""
+  elseif t == "userdata" then return "\"<userdata>\""
+  else return "\"<" .. t .. ">\""
+  end
 end
 
 --- Reset config to factory defaults.
@@ -965,6 +972,44 @@ function ConfigUI:buildExecConfig()
   execConfig.itemBufferAddr = itemBuf or ''
   execConfig.fluidBufferAddr = cfg.fluidBufferAddr or ''
   execConfig.databaseAddr = cfg.databaseAddr or ''
+
+  -- Build bufferFeeder closure: polls item/fluid buffers via transposer
+  -- Uses the first available transposer (all transposers on same network can
+  -- address any controller). Captures the addresses, not live proxies —
+  -- HAL or transposer resolves them at call time.
+  local bufferFeeder = nil
+  local ibAddr = execConfig.itemBufferAddr
+  local fbAddr = execConfig.fluidBufferAddr
+  if (ibAddr and ibAddr ~= '') or (fbAddr and fbAddr ~= '') then
+    local function _getBufferContents(addr, getContentsFn)
+      if not addr or addr == '' then return {} end
+      local ok, proxy = pcall(component.proxy, addr)
+      if not ok or not proxy then return {} end
+      local contents = {}
+      -- Try inventory-style access (size + stack per slot)
+      local szOk, sz = pcall(proxy.getInventorySize, proxy)
+      if szOk and type(sz) == 'number' and sz > 0 then
+        for slot = 1, math.min(sz, 128) do
+          local stOk, stack = pcall(proxy.getStackInSlot, proxy, slot)
+          if stOk and stack and stack.size and stack.size > 0 then
+            table.insert(contents, {
+              name = stack.name or stack.label or 'unknown',
+              label = stack.label or stack.name or 'unknown',
+              size = stack.size,
+            })
+          end
+        end
+      end
+      return contents
+    end
+
+    bufferFeeder = function()
+      local items = _getBufferContents(ibAddr)
+      local fluids = _getBufferContents(fbAddr)
+      return { items = items, fluids = fluids }
+    end
+  end
+  execConfig.bufferFeeder = bufferFeeder
 
   return execConfig
 end
@@ -1654,7 +1699,11 @@ function ConfigUI:_editMachines()
     elseif action == "add" then
       local addr = self:_readLine("New machine component address: ")
       if addr and #addr > 0 then
-        table.insert(self._config.machines, addr)
+        local laneNum = #(self._config.machines or {}) + 1
+        table.insert(self._config.machines, {
+          laneId = "Lane " .. tostring(laneNum),
+          machineAddr = addr,
+        })
         self:_setupMachineType(addr)
       end
     elseif action == "remove" then
@@ -1719,7 +1768,11 @@ function ConfigUI:_detectAndAddMachines()
   for _, entry in ipairs(detected.gtMachines) do
     if not existing[entry.address] then
       if self:_confirm(string.format("Add %s (%s)", entry.type, entry.address:sub(1, 8).."..."), true) then
-        table.insert(self._config.machines, entry.address)
+        local laneNum = #(self._config.machines or {}) + 1
+        table.insert(self._config.machines, {
+          laneId = "Lane " .. tostring(laneNum),
+          machineAddr = entry.address,
+        })
         self:_setupMachineType(entry.address)
         added = added + 1
       end
