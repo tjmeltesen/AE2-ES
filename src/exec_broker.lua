@@ -124,7 +124,12 @@ function ExecBroker.new(config)
   end
 
   -- Create HAL instance
-  local hal = M.HAL:new(config.halConfig or {})
+  -- Build halConfig: accept nested form (from buildExecConfig) or flat form (from saved config)
+  local halConfig = config.halConfig or {}
+  if config.halSideMap and not halConfig.sideMap then
+    halConfig.sideMap = config.halSideMap
+  end
+  local hal = M.HAL:new(halConfig)
 
   -- Create BufferSnapshot
   local snapshot = config.snapshot or M.BufferSnapshot.new(config.debounceWindow or 1.5)
