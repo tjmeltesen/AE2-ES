@@ -133,6 +133,59 @@ jobs:
           echo "Nightly soak test FAILED. Check workflow run logs for details."
           echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
+  # ── Tier 1b: OCEmu — OpenComputers emulator compatibility check ──
+  tier1b-ocemu:
+    name: "Tier 1b — OCEmu Compatibility"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event_name != 'schedule'
+    needs: tier1-tests
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Lua 5.2 + dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq lua5.2 liblua5.2-dev libsdl2-dev luarocks
+          sudo luarocks install luafilesystem
+          sudo luarocks install luautf8
+          sudo luarocks install luasocket
+
+      - name: Clone OCEmu
+        run: |
+          git clone --depth 1 https://github.com/zenith391/OCEmu.git /tmp/ocemu
+
+      - name: Prepare OCEmu assets
+        run: |
+          mkdir -p /tmp/ocemu/src/assets/lua
+          # OCEmu needs OC source files; fetch minimal set from OpenComputers repo
+          cd /tmp
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/MightyPirates/OpenComputers.git oc-repo 2>/dev/null || true
+          if [ -d oc-repo ]; then
+            cd oc-repo
+            git sparse-checkout set src/main/resources/assets/opencomputers/lua
+            cp -r src/main/resources/assets/opencomputers/lua/* /tmp/ocemu/src/assets/lua/ 2>/dev/null || true
+          fi
+          # Create minimal component stubs if OC assets unavailable
+          mkdir -p /tmp/ocemu/src/assets/lua/component
+          echo 'return {}' > /tmp/ocemu/src/assets/lua/component.lua
+          for comp in computer component event modem gpu screen term transposer filesystem; do
+            echo "return {}" > "/tmp/ocemu/src/assets/lua/component/$comp.lua"
+          done
+
+      - name: Run OCEmu tests
+        run: |
+          chmod +x scripts/run_ocemu_tests.sh
+          bash scripts/run_ocemu_tests.sh /tmp/ocemu "$GITHUB_WORKSPACE" /tmp/ocemu-machine
+
+      - name: Archive OCEmu logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocemu-logs
+          path: /tmp/ocemu-machine/
+          retention-days: 3
+
   # ── Horizon-QA GameTest — Java compilation check (server run requires self-hosted runner) ──
   tier2-horizon-qa-gametest:
     name: "Tier 2a — Horizon-QA GameTest (compile check)"
