@@ -237,6 +237,54 @@ function ExecBroker.new(config)
     _eventPullFiltered= config.eventPullFiltered,
   }, ExecBroker)
 
+  -- Auto-create bufferFeeder from addresses if not provided
+  -- (config loaded from disk has addresses but no feeder function)
+  if self._bufferFeeder == nil and (self._itemBufferAddr ~= "" or self._fluidBufferAddr ~= "") then
+    local ibAddr = self._itemBufferAddr
+    local fbAddr = self._fluidBufferAddr
+    local component = safeRequire("component")
+    self._bufferFeeder = function()
+      local items, fluids = {}, {}
+      if component and ibAddr ~= "" then
+        local ok, proxy = pcall(component.proxy, ibAddr)
+        if ok and proxy then
+          local szOk, sz = pcall(proxy.getInventorySize, proxy)
+          if szOk and type(sz) == "number" and sz > 0 then
+            for slot = 1, math.min(sz, 128) do
+              local stOk, stack = pcall(proxy.getStackInSlot, proxy, slot)
+              if stOk and stack and stack.size and stack.size > 0 then
+                table.insert(items, {
+                  name = stack.name or stack.label or "unknown",
+                  label = stack.label or stack.name or "unknown",
+                  size = stack.size,
+                })
+              end
+            end
+          end
+        end
+      end
+      if component and fbAddr ~= "" then
+        local ok, proxy = pcall(component.proxy, fbAddr)
+        if ok and proxy then
+          local szOk, sz = pcall(proxy.getInventorySize, proxy)
+          if szOk and type(sz) == "number" and sz > 0 then
+            for slot = 1, math.min(sz, 128) do
+              local stOk, stack = pcall(proxy.getStackInSlot, proxy, slot)
+              if stOk and stack and stack.size and stack.size > 0 then
+                table.insert(fluids, {
+                  name = stack.name or stack.label or "unknown",
+                  label = stack.label or stack.name or "unknown",
+                  size = stack.size,
+                })
+              end
+            end
+          end
+        end
+      end
+      return { items = items, fluids = fluids }
+    end
+  end
+
   return self
 end
 
