@@ -177,6 +177,7 @@ jobs:
           package.loaded["event"] = { pull = function() end, listen = function() end }
           package.loaded["sides"] = { north = 1, south = 2, east = 3, west = 4, top = 5, bottom = 6 }
           package.loaded["serialization"] = { serialize = function(v) return tostring(v) end }
+          package.loaded["computer"] = { uptime = function() return 0 end, freeMemory = function() return 1024 end, totalMemory = function() return 2048 end }
           local results = { passed = 0, failed = 0 }
           local function test(name, fn)
             local ok, err = pcall(fn)
