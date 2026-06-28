@@ -250,6 +250,10 @@ function ExecBroker.new(config)
     local component = safeRequire("component")
     local itemSide = self._hal:resolveSide("itemBuffer") or 0
     local fluidSide = self._hal:resolveSide("fluidBuffer") or 1
+    assert(type(itemSide) == "number",
+      "itemSide must be a number, got " .. type(itemSide))
+    assert(type(fluidSide) == "number",
+      "fluidSide must be a number, got " .. type(fluidSide))
     local feederLogger = self._logger  -- capture for use inside closure
     self._bufferFeeder = function()
       local items, fluids = {}, {}
@@ -257,20 +261,20 @@ function ExecBroker.new(config)
       if component and ibAddr ~= "" then
         local ok, proxy = pcall(component.proxy, ibAddr)
         if ok and proxy then
-          local szOk, sz = pcall(proxy.getInventorySize, proxy, itemSide)
+          local szOk, sz = pcall(function() return proxy:getInventorySize(itemSide) end)
           if szOk and type(sz) == "number" and sz > 0 then
             if feederLogger then
               feederLogger:debug(string.format(
                 "BUFFERING: item controller inventorySize(%d)=%d", itemSide, sz))
             end
             for slot = 1, math.min(sz, 128) do
-              local stOk, stack = pcall(proxy.getStackInSlot, proxy, itemSide, slot)
+              local stOk, stack = pcall(function() return proxy:getStackInSlot(itemSide, slot) end)
               local count = 0
               if stack then
                 if stack.size and stack.size > 0 then
                   count = stack.size
                 else
-                  local cntOk, cnt = pcall(proxy.getSlotStackSize, proxy, itemSide, slot)
+                  local cntOk, cnt = pcall(function() return proxy:getSlotStackSize(itemSide, slot) end)
                   if cntOk and type(cnt) == "number" then count = cnt end
                 end
               end
@@ -304,16 +308,16 @@ function ExecBroker.new(config)
       if component and fbAddr ~= "" then
         local ok, proxy = pcall(component.proxy, fbAddr)
         if ok and proxy then
-          local tcOk, tankCount = pcall(proxy.getTankCount, proxy, fluidSide)
+          local tcOk, tankCount = pcall(function() return proxy:getTankCount(fluidSide) end)
           if tcOk and type(tankCount) == "number" and tankCount > 0 then
             if feederLogger then
               feederLogger:debug(string.format(
                 "BUFFERING: fluid controller tankCount(%d)=%d", fluidSide, tankCount))
             end
             for tank = 1, math.min(tankCount, 32) do
-              local flOk, fluid = pcall(proxy.getFluidInTank, proxy, fluidSide, tank)
+              local flOk, fluid = pcall(function() return proxy:getFluidInTank(fluidSide, tank) end)
               if flOk and fluid and fluid.label then
-                local lvOk, level = pcall(proxy.getTankLevel, proxy, fluidSide, tank)
+                local lvOk, level = pcall(function() return proxy:getTankLevel(fluidSide, tank) end)
                 if feederLogger then
                   feederLogger:debug(string.format(
                     "BUFFERING: tank[%d] name=%s label=%s amount=%d",
