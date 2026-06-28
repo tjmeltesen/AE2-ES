@@ -152,12 +152,12 @@ jobs:
           sudo luarocks install luautf8
           sudo luarocks install luasocket
 
-      - name: Run OCEmu tests (module loading in Lua 5.2)
+      - name: Clone OCEmu (for component mocks)
         run: |
-          # Run bootstrap tests directly with Lua 5.2 (no GUI needed)
-          # This validates module loading in OC-compatible Lua 5.2 environment
-          cp scripts/run_ocemu_tests.sh /tmp/
-          cd /tmp
+          git clone --depth 1 https://github.com/zenith391/OCEmu.git /tmp/ocemu
+
+      - name: Run OCEmu tests (module loading with real OC component mocks)
+        run: |
           # Create test machine
           MACHINE_DIR=/tmp/ocemu-machine
           mkdir -p "$MACHINE_DIR/home/src"
@@ -165,27 +165,27 @@ jobs:
           cp "$GITHUB_WORKSPACE/src/"*.lua "$MACHINE_DIR/home/src/" 2>/dev/null || true
           cp "$GITHUB_WORKSPACE/supervisor/"*.lua "$MACHINE_DIR/home/supervisor/" 2>/dev/null || true
           cp "$GITHUB_WORKSPACE/"*.lua "$MACHINE_DIR/home/" 2>/dev/null || true
+          # Copy OCEmu component mocks (real OC API implementations)
+          mkdir -p "$MACHINE_DIR/lib"
+          cp -r /tmp/ocemu/src/component "$MACHINE_DIR/lib/component"
+          cp -r /tmp/ocemu/src/apis "$MACHINE_DIR/lib/apis" 2>/dev/null || true
+          cp /tmp/ocemu/src/biglist.lua "$MACHINE_DIR/lib/" 2>/dev/null || true
           # Create test script
           cat > "$MACHINE_DIR/test.lua" << 'LUAEOF'
-          -- Suppress entry points by marking modules as pre-loaded
-          -- (entry points use 'if not package.loaded[name]')
+          -- Suppress entry points
           package.loaded["src.config_ui"] = true
           package.loaded["src.exec_broker"] = true
           package.loaded["src.supervisor"] = true
           package.loaded["supervisor.config_ui"] = true
-          -- Stub OC component library for module loading
-          package.loaded["component"] = { list = function() return function() end end, proxy = function() return {} end, isAvailable = function() return false end }
-          package.loaded["event"] = { pull = function() end, listen = function() end }
-          package.loaded["sides"] = { north = 1, south = 2, east = 3, west = 4, top = 5, bottom = 6 }
-          package.loaded["serialization"] = { serialize = function(v) return tostring(v) end }
-          package.loaded["computer"] = { uptime = function() return 0 end, freeMemory = function() return 1024 end, totalMemory = function() return 2048 end }
+          -- OCEmu boot requires sides stub
+          package.loaded["sides"] = { north=1,south=2,east=3,west=4,top=5,bottom=6 }
           local results = { passed = 0, failed = 0 }
           local function test(name, fn)
             local ok, err = pcall(fn)
             if ok then results.passed = results.passed + 1; print("  [PASS] " .. name)
             else results.failed = results.failed + 1; print("  [FAIL] " .. name .. ": " .. tostring(err)) end
           end
-          print("=== AE2-ES Lua 5.2 Module Test ===")
+          print("=== AE2-ES OCEmu Module Test ===")
           test("config_ui loads", function() require("home.src.config_ui") end)
           test("exec_broker loads", function() require("home.src.exec_broker") end)
           test("hal loads", function() require("home.src.hal") end)
@@ -196,8 +196,8 @@ jobs:
           print(string.format("=== %d passed, %d failed ===", results.passed, results.failed))
           if results.failed > 0 then os.exit(1) end
           LUAEOF
-          # Set package path to find modules
-          export LUA_PATH="/tmp/ocemu-machine/?.lua;/tmp/ocemu-machine/?/init.lua;;"
+          # Use OCEmu's component mocks + our files
+          export LUA_PATH="/tmp/ocemu-machine/?.lua;/tmp/ocemu-machine/?/init.lua;/tmp/ocemu-machine/lib/?.lua;/tmp/ocemu-machine/lib/?/init.lua;;"
           lua5.2 /tmp/ocemu-machine/test.lua
 
       - name: Archive OCEmu logs
