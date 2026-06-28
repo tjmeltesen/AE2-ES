@@ -250,39 +250,45 @@ end
 -- @return string  next phase (LOGGING or BUFFERING)
 function ExecBroker:_phaseBUFFERING()
   if not self._bufferFeeder then
-    return ExecBroker.PHASES.BUFFERING  -- no feeder, stay here
+    if self._logger then self._logger:warn("BUFFERING: no bufferFeeder configured") end
+    return ExecBroker.PHASES.BUFFERING
   end
-
   -- Poll the central buffer
   local bufferData = self._bufferFeeder()
   if type(bufferData) ~= "table" then
+    if self._logger then self._logger:warn("BUFFERING: bufferFeeder returned non-table: " .. type(bufferData)) end
     return ExecBroker.PHASES.BUFFERING
   end
 
   -- Update snapshot with new data
   local stable = self._snapshot:update(bufferData)
+  if self._logger then self._logger:info("BUFFERING: snapshot stable=" .. tostring(stable)) end
 
   if not stable then
     -- Still waiting for stability; yield and try again
+    if self._logger then self._logger:info("BUFFERING: snapshot not stable, waiting") end
     return ExecBroker.PHASES.BUFFERING
   end
 
   -- Check if there's actually data in the stable snapshot
   local snapData = self._snapshot:getSnapshotData()
   if not snapData then
+    if self._logger then self._logger:warn("BUFFERING: snapshot has no data") end
     return ExecBroker.PHASES.BUFFERING
   end
 
   local hasItems = (snapData.items and #snapData.items > 0)
   local hasFluids = (snapData.fluids and #snapData.fluids > 0)
-
+  if self._logger then self._logger:info("BUFFERING: hasItems=" .. tostring(hasItems) .. ", hasFluids=" .. tostring(hasFluids)) end
   if not hasItems and not hasFluids then
     -- Stable but empty — nothing to process; reset and wait
+    if self._logger then self._logger:info("BUFFERING: snapshot is empty, resetting") end
     self._snapshot:reset()
     return ExecBroker.PHASES.BUFFERING
   end
 
   -- Stable with data — transition to LOGGING
+  if self._logger then self._logger:info("BUFFERING: snapshot is stable with data, transitioning to LOGGING") end
   return ExecBroker.PHASES.LOGGING
 end
 
@@ -694,10 +700,18 @@ end
 -- Fire-and-forget: never waits for a response.
 -- Uses snapshot of current broker state.
 function ExecBroker:_transmitTelemetry()
-  -- Collect hardware matrix from MachineNodes
   local hwMatrix = {}
   for _, entry in ipairs(self._machineList) do
-    hwMatrix[entry.laneId] = entry.node:toTelemetry()
+    if entry.node and type(entry.node.toTelemetry) == "function" then
+      hwMatrix[entry.laneId] = entry.node:toTelemetry()
+    else
+      -- Fallback: emit bare identity data so telemetry still fires
+      hwMatrix[entry.laneId] = {
+        laneId  = entry.laneId,
+        address = entry.address,
+        status  = "unknown",
+      }
+    end
   end
 
   -- Collect alerts from all maintenance reports
@@ -746,41 +760,49 @@ function ExecBroker:tick()
   self._tickCount = self._tickCount + 1
 
   -- Check if it's time for a buffer poll (throttled by pollInterval)
-  -- Always poll the buffer regardless of current phase for concurrent job creation
   local cur = now()
   local timeSincePoll = cur - self._lastPollTime
 
   if timeSincePoll >= self._pollInterval then
     self._lastPollTime = cur
-    -- Poll the buffer. If stable, log the job and queue it without
-    -- disrupting the current phase (concurrent job creation).
+
     if self._bufferFeeder then
       local bufferData = self._bufferFeeder()
       if type(bufferData) == "table" then
         if self._snapshot:update(bufferData) then
-          -- Buffer stable: create manifest and push to queue
+          if self._logger then self._logger:info("BUFFERING: snapshot stable, converting to manifest") end
           local manifest = self._snapshot:convertToManifest(0)
           if manifest then
-            -- Skip empty manifests (stable but no items/fluids)
-            local hasItems = manifest.inputs and manifest.inputs.items and #manifest.inputs.items > 0
+            local hasItems  = manifest.inputs and manifest.inputs.items  and #manifest.inputs.items  > 0
             local hasFluids = manifest.inputs and manifest.inputs.fluids and #manifest.inputs.fluids > 0
             if hasItems or hasFluids then
               local job = self._M.JobManifest.new(manifest.id, manifest.inputs)
-              job.priority = manifest.priority or 0
-              job.status = "PENDING"
+              job.priority  = manifest.priority  or 0
+              job.status    = "PENDING"
               job.createdAt = manifest.createdAt or os.time()
               job.updatedAt = manifest.updatedAt or os.time()
 
               if self._queue:push(job) then
+                if self._logger then self._logger:info("BUFFERING: job " .. job.id .. " queued") end
                 self._snapshot:reset()
+              else
+                if self._logger then self._logger:warn("BUFFERING: queue full, job not pushed") end
               end
             else
-              -- Stable but empty — reset and wait for data
+              if self._logger then self._logger:info("BUFFERING: stable but empty, resetting snapshot") end
               self._snapshot:reset()
             end
+          else
+            if self._logger then self._logger:warn("BUFFERING: convertToManifest returned nil") end
           end
+        else
+          if self._logger then self._logger:debug("BUFFERING: snapshot not yet stable") end
         end
+      else
+        if self._logger then self._logger:warn("BUFFERING: bufferFeeder returned non-table: " .. type(bufferData)) end
       end
+    else
+      if self._logger then self._logger:warn("BUFFERING: no bufferFeeder configured") end
     end
   end
 
@@ -788,9 +810,11 @@ function ExecBroker:tick()
   local nextPhase = self._phase
 
   if self._phase == ExecBroker.PHASES.BUFFERING then
-    -- BUFFERING: if queue has pending jobs, transition to ALLOCATING
     if self._queue:length() > 0 then
+      if self._logger then self._logger:info("BUFFERING: queue has jobs, transitioning to ALLOCATING") end
       nextPhase = self:_phaseALLOCATING()
+    else
+      nextPhase = self:_phaseBUFFERING()
     end
   elseif self._phase == ExecBroker.PHASES.LOGGING then
     nextPhase = self:_phaseLOGGING()
@@ -813,16 +837,6 @@ function ExecBroker:tick()
     self._stats.cycles = self._stats.cycles + 1
   end
 
-  -- If we have queued jobs, try allocating (don't block during processing)
-  if self._queue:length() > 0
-     and self._phase ~= ExecBroker.PHASES.ALLOCATING then
-    local allocPhase = self:_phaseALLOCATING()
-    if allocPhase ~= self._phase then
-      self._phase = allocPhase
-      self._stats.cycles = self._stats.cycles + 1
-    end
-  end
-
   -- Telemetry broadcast (throttled by heartbeatInterval)
   local timeSinceHeartbeat = cur - self._lastHeartbeat
   if self._lastHeartbeat == 0 or timeSinceHeartbeat >= self._heartbeatInterval then
@@ -831,7 +845,6 @@ function ExecBroker:tick()
 
   return true
 end
-
 --- Run the main event loop (cooperative multitasking via event.pull).
 -- This is the production entry point. Uses the OC event system.
 -- For testing without OC, call tick() directly in a loop.

@@ -1569,7 +1569,7 @@ function ConfigUI:_editMachines()
     if count == 0 then
       self:_writeLine(5, "No machines configured.", COLOR_YELLOW)
     else
-      for _, lane in ipairs(self._config.machines) do
+      for i, lane in ipairs(self._config.machines) do
         local addr = lane.machineAddr or lane.address or ""
         local mt = (self._config.machineTypes and self._config.machineTypes[addr]) or "basic"
         local mtLabel = ({
