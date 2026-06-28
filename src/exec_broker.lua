@@ -250,6 +250,7 @@ function ExecBroker.new(config)
     local component = safeRequire("component")
     local itemSide = self._hal:resolveSide("itemBuffer") or 0
     local fluidSide = self._hal:resolveSide("fluidBuffer") or 1
+    local feederLogger = self._logger  -- capture for use inside closure
     self._bufferFeeder = function()
       local items, fluids = {}, {}
       -- Item buffer: inventory_controller uses getInventorySize + getStackInSlot
@@ -302,8 +303,22 @@ function ExecBroker.new(config)
           end
         end
       end
+      if feederLogger then
+        feederLogger:debug(string.format(
+          "BUFFERING: feeder poll — %d items, %d fluids",
+          #items, #fluids))
+      end
       return { items = items, fluids = fluids }
     end
+    if self._logger then
+      self._logger:info(string.format(
+        "BUFFERING: auto-created feeder (itemSide=%d, fluidSide=%d, ibAddr=%s, fbAddr=%s)",
+        itemSide, fluidSide,
+        ibAddr ~= "" and ibAddr:sub(1,8).."..." or "(none)",
+        fbAddr ~= "" and fbAddr:sub(1,8).."..." or "(none)"))
+    end
+  elseif self._logger then
+    self._logger:warn("BUFFERING: no feeder and no buffer addresses configured")
   end
 
   return self
@@ -839,6 +854,11 @@ function ExecBroker:tick()
     if self._bufferFeeder then
       local bufferData = self._bufferFeeder()
       if type(bufferData) == "table" then
+        if self._logger then
+          local nItems = (bufferData.items and #bufferData.items) or 0
+          local nFluids = (bufferData.fluids and #bufferData.fluids) or 0
+          self._logger:debug(string.format("BUFFERING: feeder returned %d items, %d fluids", nItems, nFluids))
+        end
         if self._snapshot:update(bufferData) then
           if self._logger then self._logger:info("BUFFERING: snapshot stable, converting to manifest") end
           local manifest = self._snapshot:convertToManifest(0)
