@@ -139,7 +139,6 @@ jobs:
     timeout-minutes: 10
     if: github.event_name != 'schedule'
     needs: tier1-tests
-    continue-on-error: true  # OCEmu work-in-progress (16/21 real-API tests pass)
     steps:
       - uses: actions/checkout@v7
 
@@ -168,7 +167,7 @@ jobs:
           cp "$GITHUB_WORKSPACE/src/MachineNode.lua" "$MACHINE_DIR/" 2>/dev/null || true
           cp "$GITHUB_WORKSPACE/src/BufferSnapshot.lua" "$MACHINE_DIR/" 2>/dev/null || \
           cp "$GITHUB_WORKSPACE/src/buffersnapshot.lua" "$MACHINE_DIR/" 2>/dev/null || \
-          printf 'local B={};function B.new(d)return setmetatable({_buffer={},_stable=false},{__index=B})end;function B:update(d)self._buffer=d;self._stable=true;return true end;function B:reset()self._buffer={};self._stable=false end;function B:convertToManifest(t)return{id="j-"..(t or 0),inputs={items={},fluids={}},priority=0,createdAt=0,updatedAt=0}end;return B' > "$MACHINE_DIR/BufferSnapshot.lua"
+          echo 'local B={};B.new=function(d)return setmetatable({_buffer={},_stable=false},{__index=B})end;B.update=function(s,d)s._buffer=d;s._stable=true;return true end;B.reset=function(s)s._buffer={};s._stable=false end;B.convertToManifest=function(s,t)return{id="j-"..(t or 0),inputs={items={},fluids={}},priority=0,createdAt=0,updatedAt=0}end;return B' > "$MACHINE_DIR/BufferSnapshot.lua"
           cp "$GITHUB_WORKSPACE/JobManifest.lua" "$MACHINE_DIR/" 2>/dev/null || true
           cp "$GITHUB_WORKSPACE/src/telemetrypayload.lua" "$MACHINE_DIR/telemetry_payload.lua" 2>/dev/null || true
           cp "$GITHUB_WORKSPACE/MaintenanceReport.lua" "$MACHINE_DIR/MaintenanceReport.lua" 2>/dev/null || true
