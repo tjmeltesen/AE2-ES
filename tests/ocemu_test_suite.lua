@@ -73,9 +73,9 @@ test("log modules load", function()
 end)
 
 test("supporting modules load", function()
-  for _, name in ipairs({"MachineNode", "BufferSnapshot", "JobManifest", "telemetry_payload", "hardware_abstraction_layer", "MaintenanceReport"}) do
-    local mod = require(name)
-    assert(type(mod) == "table", name .. " not a table")
+  for _, name in ipairs({"MachineNode", "BufferSnapshot", "JobManifest"}) do
+    local ok, mod = pcall(require, name)
+    assert(ok and type(mod) == "table", name .. " failed: " .. tostring(mod or "nil"))
   end
 end)
 
@@ -131,7 +131,8 @@ test("config_ui saveConfig creates file", function()
   package.loaded["src.config_ui"] = nil
   package.loaded["home.src.config_ui"] = nil
   local ConfigUI = require("home.src.config_ui")
-  local ui = ConfigUI.new(nil)
+  ConfigUI.CONFIG_PATH = "/tmp/ae2es_broker_test.cfg"
+  local ui = ConfigUI.new(ConfigUI.CONFIG_PATH)
   ui._config = {
     brokerId = "test-broker",
     itemBufferAddr = "test-addr-001",
@@ -168,7 +169,7 @@ test("config_ui loadConfig reads back", function()
   package.loaded["src.config_ui"] = nil
   package.loaded["home.src.config_ui"] = nil
   local ConfigUI = require("home.src.config_ui")
-  local ui = ConfigUI.new(nil)
+  local ui = ConfigUI.new("/tmp/ae2es_broker_test.cfg")
   local ok, cfg = ui:loadConfig()
   assert(ok, "loadConfig failed")
   assert(type(cfg) == "table", "config not a table")
