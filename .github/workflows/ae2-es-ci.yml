@@ -172,6 +172,8 @@ jobs:
           package.loaded["src.exec_broker"] = true
           package.loaded["src.supervisor"] = true
           package.loaded["supervisor.config_ui"] = true
+          -- Stub OC component library for module loading
+          package.loaded["component"] = { list = function() return function() end end, proxy = function() return {} end, isAvailable = function() return false end }
           local results = { passed = 0, failed = 0 }
           local function test(name, fn)
             local ok, err = pcall(fn)
