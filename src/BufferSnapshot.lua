@@ -1,6 +1,19 @@
 -- BufferSnapshot module
 -- Transient structure for Phase 1-2 buffer comparison.
 -- Checksum-based stability detection over debounce window (1-2 seconds).
+--
+-- API (new, used by exec_broker):
+--   new(debounceWindow)  — constructor with debounce window in seconds
+--   :update(bufferData)  — feed new poll data, returns true when stable
+--   :getSnapshotData()   — returns {items={...}, fluids={...}}
+--   :convertToManifest(jobId) — create a JobManifest (1-arg) or (module, jobId) (2-arg)
+--   :reset()             — clear internal state for fresh cycle
+--
+-- Backward compat (used by test_state_transitions):
+--   new(bufferTable)     — old-style constructor with buffer data
+--   :compareAndDebounce(other, threshold) — old debounce check
+--   :getStableCount()
+--   :resetDebounce()
 
 local BufferSnapshot = {}
 BufferSnapshot.__index = BufferSnapshot
@@ -45,31 +58,49 @@ function BufferSnapshot.generateChecksum(buffer)
 end
 
 --- Create a new BufferSnapshot
---- @param buffer table snapshot of AE2 interface contents
+--- Supports both old (buffer table) and new (debounceWindow number) calling conventions.
+--- @param arg number (debounceWindow) or table (old-style buffer for backward compat)
 --- @return BufferSnapshot
-function BufferSnapshot.new(buffer)
+function BufferSnapshot.new(arg)
   local self = setmetatable({}, BufferSnapshot)
-  self.buffer = buffer or {}
-  self.checksum = BufferSnapshot.generateChecksum(buffer)
-  self.timestamp = os.epoch and os.epoch() or os.time()
+
+  -- Backward compat: if arg is a table, treat as old-style buffer
+  if type(arg) == "table" then
+    self.buffer = arg
+    self.checksum = BufferSnapshot.generateChecksum(arg)
+    self.timestamp = (os.epoch and os.epoch()) or os.time()
+    self._debounceWindow = 1.5
+  else
+    self._debounceWindow = (type(arg) == "number" and arg) or 1.5
+  end
+
+  self._lastBuffer = nil
+  self._lastChecksum = nil
   self._stableCount = 0
+  self._lastTimestamp = nil
   return self
 end
 
---- Compare two snapshots and update debounce state
+--- Compare two snapshots and update debounce state (backward compat)
+--- Works with old-style (self.checksum/self.timestamp).
 --- @param other BufferSnapshot
---- @param debounceThreshold number seconds of stability required (default 1.5)
+--- @param debounceThreshold number ms of stability required (default 1500)
 --- @return boolean true if buffer is stable (ready to transition)
 function BufferSnapshot:compareAndDebounce(other, debounceThreshold)
-  debounceThreshold = debounceThreshold or 1.5
+  debounceThreshold = debounceThreshold or 1500
 
   if not other then
     self._stableCount = 0
     return false
   end
 
-  if self.checksum == other.checksum then
-    local elapsed = math.abs(self.timestamp - other.timestamp)
+  local myCS = self.checksum or self._lastChecksum
+  local otherCS = other.checksum or other._lastChecksum
+  local myTs = self.timestamp or self._lastTimestamp or 0
+  local otherTs = other.timestamp or other._lastTimestamp or 0
+
+  if myCS and myCS == otherCS then
+    local elapsed = math.abs(myTs - otherTs)
     if elapsed >= debounceThreshold then
       self._stableCount = (self._stableCount or 0) + 1
       return true
@@ -81,20 +112,136 @@ function BufferSnapshot:compareAndDebounce(other, debounceThreshold)
   return false
 end
 
---- Convert this snapshot into a JobManifest
---- This triggers the LOGGING→ALLOCATING transition.
---- @param jobManifestModule table JobManifest module reference
---- @param jobId string
---- @return table JobManifest
-function BufferSnapshot:convertToManifest(jobManifestModule, jobId)
-  if not jobManifestModule then return nil end
-
-  local manifest = jobManifestModule.new(jobId)
-  for itemKey, itemData in pairs(self.buffer) do
-    local qty = itemData.size or itemData.count or 1
-    manifest:registerInput(itemKey, qty)
+--- Update buffer data from exec_broker (time-based debounce)
+--- Stores bufferData, computes checksum, compares with previous.
+--- Returns true when the same checksum has been stable for >= debounceWindow seconds.
+--- @param bufferData table data from bufferFeeder with .items and .fluids
+--- @return boolean true if buffer is stable (ready to transition)
+function BufferSnapshot:update(bufferData)
+  if not bufferData then
+    self._lastBuffer = nil
+    self._lastChecksum = nil
+    self._stableCount = 0
+    self._lastTimestamp = nil
+    return false
   end
-  manifest:updateState(manifest.STATE.LOGGING)
+
+  local checksum = BufferSnapshot.generateChecksum(bufferData)
+  local now = os.time()
+
+  -- Track transition from different checksum → same checksum
+  if self._lastChecksum and self._lastChecksum == checksum then
+    if self._stableSince then
+      local elapsed = now - self._stableSince
+      if elapsed >= self._debounceWindow then
+        self._stableCount = (self._stableCount or 0) + 1
+        self._lastTimestamp = now
+        return true
+      end
+    end
+    self._stableCount = (self._stableCount or 0) + 1
+  else
+    -- Checksum changed — start new stability window
+    self._stableCount = 1
+    self._stableSince = now
+  end
+
+  self._lastBuffer = bufferData
+  self._lastChecksum = checksum
+
+  return false
+end
+
+--- Get separated snapshot data: items and fluids
+--- @return table {items = {...}, fluids = {...}}
+function BufferSnapshot:getSnapshotData()
+  local buffer = self._lastBuffer or self.buffer
+  if not buffer then
+    return { items = {}, fluids = {} }
+  end
+
+  local items = {}
+  local fluids = {}
+
+  -- New-style buffer: {items=[...], fluids=[...]}
+  if type(buffer.items) == "table" then
+    for _, v in ipairs(buffer.items) do
+      table.insert(items, { label = v.label, size = v.size, name = v.name })
+    end
+  end
+  if type(buffer.fluids) == "table" then
+    for _, v in ipairs(buffer.fluids) do
+      table.insert(fluids, { label = v.label, amount = v.amount })
+    end
+  end
+
+  -- Old-style backward compat: buffer IS the items array
+  if buffer[1] ~= nil and type(buffer[1]) == "table" then
+    for _, v in ipairs(buffer) do
+      table.insert(items, { label = v.label, size = v.size, name = v.name, count = v.count })
+    end
+  end
+
+  return { items = items, fluids = fluids }
+end
+
+--- Reset all internal state for a fresh buffering cycle
+function BufferSnapshot:reset()
+  self._lastBuffer = nil
+  self._lastChecksum = nil
+  self._stableCount = 0
+  self._lastTimestamp = nil
+  self._stableSince = nil
+end
+
+--- Convert this snapshot into a JobManifest
+--- Supports both old (2-arg) and new (1-arg) calling conventions.
+--- @param arg1 string (jobId, new API) or table (jobManifestModule, old API)
+--- @param arg2 string (jobId, old API only)
+--- @return table JobManifest
+function BufferSnapshot:convertToManifest(arg1, arg2)
+  local JobManifestMod, jobId
+
+  if type(arg1) == "table" then
+    -- Old API: convertToManifest(jobManifestModule, jobId)
+    JobManifestMod = arg1
+    jobId = arg2
+  else
+    -- New API: convertToManifest(jobId)
+    -- Use root-level JobManifest.lua (canonical version with id, status)
+    JobManifestMod = require("JobManifest")
+    jobId = arg1
+  end
+
+  local manifest = JobManifestMod.new(jobId)
+
+  -- Set fields that exec_broker expects
+  manifest.priority = 0
+  manifest.createdAt = os.time()
+  manifest.updatedAt = os.time()
+  manifest.status = 'LOGGING'
+
+  -- Update manifest state properly for the old API (test_state_transitions)
+  if type(arg1) == "table" and manifest.state then
+    manifest:updateState("LOGGING")
+  end
+
+  -- Separate items and fluids from the buffered data
+  local snapshotData = self:getSnapshotData()
+  manifest.inputs = {
+    items = snapshotData.items,
+    fluids = snapshotData.fluids
+  }
+
+  -- Old API: register each input individually (for _inputRegistry backward compat)
+  if type(arg1) == "table" and manifest.registerInput then
+    if snapshotData.items then
+      for _, item in ipairs(snapshotData.items) do
+        manifest:registerInput(item.name or item.label or "unknown", item.size or 0)
+      end
+    end
+  end
+
   return manifest
 end
 
@@ -104,9 +251,9 @@ function BufferSnapshot:getStableCount()
   return self._stableCount or 0
 end
 
---- Force-reset the debounce counter
+--- Force-reset the debounce counter (alias for reset)
 function BufferSnapshot:resetDebounce()
-  self._stableCount = 0
+  self:reset()
 end
 
 return BufferSnapshot

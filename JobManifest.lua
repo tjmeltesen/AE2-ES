@@ -14,7 +14,7 @@
 local JobManifest = {}
 JobManifest.__index = JobManifest
 
--- Valid state transitions
+-- Valid state transitions (lenient — PENDING/DISPATCHED are queue states set by exec_broker)
 local VALID_TRANSITIONS = {
   BUFFERING    = { LOGGING = true, FAULTED = true },
   LOGGING      = { ALLOCATING = true, FAULTED = true },
@@ -24,6 +24,9 @@ local VALID_TRANSITIONS = {
   CLEANUP      = { COMPLETED = true, FAULTED = true },
   COMPLETED    = {},
   FAULTED      = {},
+  -- Queue-only states (set externally by exec_broker/JobQueue), allow any forward transition
+  PENDING      = { DISPATCHED = true, ALLOCATING = true, FAULTED = true },
+  DISPATCHED   = { ALLOCATING = true, FAULTED = true },
 }
 
 -- Terminal states that cannot transition further

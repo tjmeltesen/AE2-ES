@@ -32,17 +32,38 @@ MachineNode.STATUS = {
 local DEFAULT_POLL_INTERVAL = 5
 
 --- Create a new MachineNode instance.
--- @param hardwareAddress   string  Component address of the GT machine
--- @param interfaceAddress  string  Component address of the ME Interface
--- @param machineType       string  Human-readable machine type (e.g. "gt_machine")
+-- Supports two calling conventions:
+--   1. Legacy (3 positional args): (hardwareAddress, interfaceAddress, machineType)
+--   2. New (2 args with options table): (hardwareAddress, optionsTable)
+--      optionsTable fields: hardwareAddress, interfaceAddress, machineType, laneId, proxy
+-- @param hardwareAddress  string  Component address of the GT machine
+-- @param arg2             string|table  interfaceAddress (legacy) or options table (new)
+-- @param arg3             string  machineType (legacy only)
 -- @return MachineNode instance
-function MachineNode.new(hardwareAddress, interfaceAddress, machineType)
+function MachineNode.new(hardwareAddress, arg2, arg3)
   assert(type(hardwareAddress) == "string" and #hardwareAddress > 0,
          "hardwareAddress is required")
+
+  local interfaceAddress, machineType, laneId, proxy
+
+  if type(arg2) == "table" then
+    -- New convention: options table
+    interfaceAddress = arg2.interfaceAddress or ""
+    machineType      = arg2.machineType or "gt_machine"
+    laneId           = arg2.laneId
+    proxy            = arg2.proxy
+  else
+    -- Legacy convention: positional args
+    interfaceAddress = arg2 or ""
+    machineType      = arg3 or "gt_machine"
+  end
+
   return setmetatable({
     hardwareAddress    = hardwareAddress,
-    interfaceAddress   = interfaceAddress or "",
-    machineType        = machineType or "gt_machine",
+    interfaceAddress   = interfaceAddress,
+    machineType        = machineType,
+    laneId             = laneId,
+    _proxy             = proxy,
     status             = MachineNode.STATUS.AVAILABLE,
     activeJob          = nil,    -- JobManifest reference when PROCESSING
     maintenanceFlags   = {
