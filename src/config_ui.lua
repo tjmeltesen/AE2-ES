@@ -608,11 +608,11 @@ function ConfigUI:testComponent(address, compType)
 
   -- Additional validation by type
   if compType == "modem" or proxyType == "modem" then
-    local openOk, _ = pcall(proxy.open, proxy, math.random(60000, 65535))
+    local openOk, _ = pcall(proxy.open, math.random(60000, 65535))
     if not openOk then
       return false, "Modem proxy exists but open() failed. Check that the modem is installed and the computer has a network card."
     end
-    pcall(proxy.close, proxy, 123)
+    pcall(proxy.close, 123)
     return true, "Modem connected and responding"
   end
 
