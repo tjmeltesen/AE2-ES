@@ -178,8 +178,6 @@ test("config_ui loadConfig reads back", function()
   if ok then assert(type(cfg) == "table", "config not table") end
   package.loaded["src.config_ui"] = true
 end)
-  package.loaded["src.config_ui"] = true
-end)
 
 -- ===========================================================================
 -- Group 4: Exec Broker Construction
