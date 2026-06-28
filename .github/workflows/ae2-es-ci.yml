@@ -165,7 +165,7 @@ jobs:
           cp "$GITHUB_WORKSPACE/"*.lua "$MACHINE_DIR/home/" 2>/dev/null || true
           # Also copy stub/helper modules needed by exec_broker
           cp "$GITHUB_WORKSPACE/src/MachineNode.lua" "$MACHINE_DIR/" 2>/dev/null || true
-          cp "$GITHUB_WORKSPACE/src/BufferSnapshot.lua" "$MACHINE_DIR/" 2>/dev/null || true
+          cp "$GITHUB_WORKSPACE/src/BufferSnapshot.lua" "$MACHINE_DIR/" || echo "WARN: BufferSnapshot.lua not found"
           cp "$GITHUB_WORKSPACE/JobManifest.lua" "$MACHINE_DIR/" 2>/dev/null || true
           cp "$GITHUB_WORKSPACE/src/telemetrypayload.lua" "$MACHINE_DIR/telemetry_payload.lua" 2>/dev/null || true
           cp "$GITHUB_WORKSPACE/MaintenanceReport.lua" "$MACHINE_DIR/MaintenanceReport.lua" 2>/dev/null || true
