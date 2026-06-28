@@ -608,11 +608,11 @@ function ConfigUI:testComponent(address, compType)
 
   -- Additional validation by type
   if compType == "modem" or proxyType == "modem" then
-    local openOk, _ = pcall(proxy.open, proxy, math.random(60000, 65535))
+    local openOk, _ = pcall(proxy.open, math.random(60000, 65535))
     if not openOk then
       return false, "Modem proxy exists but open() failed. Check that the modem is installed and the computer has a network card."
     end
-    pcall(proxy.close, proxy, 123)
+    pcall(proxy.close, 123)
     return true, "Modem connected and responding"
   end
 
@@ -987,10 +987,10 @@ function ConfigUI:buildExecConfig()
       local ok, proxy = pcall(component.proxy, addr)
       if not ok or not proxy then return {} end
       local contents = {}
-      local szOk, sz = pcall(proxy.getInventorySize, proxy, side)
+      local szOk, sz = pcall(proxy.getInventorySize, side)
       if szOk and type(sz) == 'number' and sz > 0 then
         for slot = 1, math.min(sz, 128) do
-          local stOk, stack = pcall(proxy.getStackInSlot, proxy, side, slot)
+          local stOk, stack = pcall(proxy.getStackInSlot, side, slot)
           -- getStackInSlot may not include .size on GTNH controllers —
           -- use getSlotStackSize for the actual count
           local count = 0
@@ -998,7 +998,7 @@ function ConfigUI:buildExecConfig()
             if stack.size and stack.size > 0 then
               count = stack.size
             else
-              local cntOk, cnt = pcall(proxy.getSlotStackSize, proxy, side, slot)
+              local cntOk, cnt = pcall(proxy.getSlotStackSize, side, slot)
               if cntOk and type(cnt) == 'number' then count = cnt end
             end
           end
@@ -1020,12 +1020,12 @@ function ConfigUI:buildExecConfig()
       local ok, proxy = pcall(component.proxy, addr)
       if not ok or not proxy then return {} end
       local contents = {}
-      local tcOk, tankCount = pcall(proxy.getTankCount, proxy, side)
+      local tcOk, tankCount = pcall(proxy.getTankCount, side)
       if tcOk and type(tankCount) == 'number' and tankCount > 0 then
         for tank = 1, math.min(tankCount, 32) do
-          local flOk, fluid = pcall(proxy.getFluidInTank, proxy, side, tank)
+          local flOk, fluid = pcall(proxy.getFluidInTank, side, tank)
           if flOk and fluid and fluid.label then
-            local lvOk, level = pcall(proxy.getTankLevel, proxy, side, tank)
+            local lvOk, level = pcall(proxy.getTankLevel, side, tank)
             table.insert(contents, {
               name = fluid.name or fluid.label or 'unknown',
               label = fluid.label or 'unknown',
@@ -1043,12 +1043,12 @@ function ConfigUI:buildExecConfig()
       local ok, proxy = pcall(component.proxy, addr)
       if not ok or not proxy then return {} end
       local contents = {}
-      local tcOk, tankCount = pcall(proxy.getTankCount, proxy, side)
+      local tcOk, tankCount = pcall(proxy.getTankCount, side)
       if tcOk and type(tankCount) == 'number' and tankCount > 0 then
         for tank = 1, math.min(tankCount, 32) do
-          local flOk, fluid = pcall(proxy.getFluidInTank, proxy, side, tank)
+          local flOk, fluid = pcall(proxy.getFluidInTank, side, tank)
           if flOk and fluid and fluid.label then
-            local lvOk, level = pcall(proxy.getTankLevel, proxy, side, tank)
+            local lvOk, level = pcall(proxy.getTankLevel, side, tank)
             table.insert(contents, {
               name = fluid.name or fluid.label or 'unknown',
               label = fluid.label or 'unknown',
