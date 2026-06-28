@@ -165,9 +165,7 @@ jobs:
           cp "$GITHUB_WORKSPACE/"*.lua "$MACHINE_DIR/home/" 2>/dev/null || true
           # Also copy stub/helper modules needed by exec_broker
           cp "$GITHUB_WORKSPACE/src/MachineNode.lua" "$MACHINE_DIR/" 2>/dev/null || true
-          cp "$GITHUB_WORKSPACE/src/BufferSnapshot.lua" "$MACHINE_DIR/" 2>/dev/null || \
-          cp "$GITHUB_WORKSPACE/src/buffersnapshot.lua" "$MACHINE_DIR/" 2>/dev/null || \
-          echo 'local B={};B.new=function(d)return setmetatable({_buffer={},_stable=false},{__index=B})end;B.update=function(s,d)s._buffer=d;s._stable=true;return true end;B.reset=function(s)s._buffer={};s._stable=false end;B.convertToManifest=function(s,t)return{id="j-"..(t or 0),inputs={items={},fluids={}},priority=0,createdAt=0,updatedAt=0}end;return B' > "$MACHINE_DIR/BufferSnapshot.lua"
+          cp "$GITHUB_WORKSPACE/src/BufferSnapshot.lua" "$MACHINE_DIR/" 2>/dev/null || echo "WARN: BufferSnapshot missing from git"
           cp "$GITHUB_WORKSPACE/JobManifest.lua" "$MACHINE_DIR/" 2>/dev/null || true
           cp "$GITHUB_WORKSPACE/src/telemetrypayload.lua" "$MACHINE_DIR/telemetry_payload.lua" 2>/dev/null || true
           cp "$GITHUB_WORKSPACE/MaintenanceReport.lua" "$MACHINE_DIR/MaintenanceReport.lua" 2>/dev/null || true
