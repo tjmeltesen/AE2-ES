@@ -571,7 +571,16 @@ function ExecBroker:_transferForJob(addr, active)
   local fromSide = self._hal:resolveSide("itemBuffer")
   local toSide   = self._hal:resolveSide("interface")
 
+  if self._logger then
+    self._logger:debug(string.format(
+      "TRANSFER: fromSide=%s toSide=%s addr=%s",
+      tostring(fromSide), tostring(toSide), tostring(addr)))
+  end
+
   if not fromSide or not toSide then
+    if self._logger then
+      self._logger:error("TRANSFER: side resolution failed — check halSideMap")
+    end
     -- Cannot resolve sides — fault the job
     manifest:fault("Cannot resolve transfer sides")
     active.phase = ExecBroker.PHASES.CLEANUP
@@ -580,6 +589,10 @@ function ExecBroker:_transferForJob(addr, active)
 
   -- Drain items from central buffer to machine interface
   local transferred = self._hal:drainInventory(fromSide, toSide)
+  if self._logger then
+    self._logger:debug(string.format(
+      "TRANSFER: drainInventory returned %s", tostring(transferred)))
+  end
   if transferred == nil then
     -- HAL error — check if this is a recoverable error
     local halErr = self._hal:getLastError()
