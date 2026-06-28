@@ -65,8 +65,11 @@ end
 function JobManifest:bindHardware(machineIndex, machineNode)
   if machineNode == nil and type(machineIndex) == 'string' then
     machineNode = { address = machineIndex }
+    -- exec_broker backward compat: set assignedMachine for root-level API compat
+    self.assignedMachine = machineIndex
   end
   self._hardwareBinds[machineIndex] = machineNode
+  return true
 end
 
 --- Transition to the next state
