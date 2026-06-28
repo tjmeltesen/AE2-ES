@@ -849,8 +849,8 @@ function ConfigUI:_serializeValue(val)
     local escaped = val:gsub("\\", "\\\\"):gsub("\"", "\\\""):gsub("\n", "\\n"):gsub("\r", "\\r"):gsub("\t", "\\t")
     return "\"" .. escaped .. "\""
   end
-  -- Tables / functions / userdata — cannot serialize, return placeholder
-  if t == "table" then return "\"<table>\""
+  -- Tables: recursively serialize; functions/userdata: placeholder
+  if t == "table" then return self:_serializeTable(val, "")
   elseif t == "function" then return "\"<function>\""
   elseif t == "userdata" then return "\"<userdata>\""
   else return "\"<" .. t .. ">\""

@@ -250,6 +250,10 @@ function ExecBroker.new(config)
     local component = safeRequire("component")
     local itemSide = self._hal:resolveSide("itemBuffer") or 0
     local fluidSide = self._hal:resolveSide("fluidBuffer") or 1
+    assert(type(itemSide) == "number",
+      "itemSide must be a number, got " .. type(itemSide))
+    assert(type(fluidSide) == "number",
+      "fluidSide must be a number, got " .. type(fluidSide))
     local feederLogger = self._logger  -- capture for use inside closure
     self._bufferFeeder = function()
       local items, fluids = {}, {}
