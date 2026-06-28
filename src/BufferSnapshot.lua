@@ -28,7 +28,6 @@ function BufferSnapshot.generateChecksum(buffer)
   end
 
   local parts = {}
-  -- Sort keys for deterministic output
   local keys = {}
   for k, _ in pairs(buffer) do
     table.insert(keys, k)
@@ -46,13 +45,12 @@ function BufferSnapshot.generateChecksum(buffer)
     end
   end
 
-  -- Simple FNV-1a style hash
+  -- Pure Lua FNV-1a style hash (no bit/bit32 library needed)
   local hash = 2166136261
   local str = table.concat(parts, "|")
   for i = 1, #str do
-    hash = bit32.bxor(hash, string.byte(str, i))
-    hash = hash * 16777619
-    hash = bit32.band(hash, 0xFFFFFFFF)
+    hash = (hash + string.byte(str, i)) * 16777619
+    hash = hash % 0x100000000
   end
   return string.format("%08x", hash)
 end
@@ -112,36 +110,59 @@ function BufferSnapshot:compareAndDebounce(other, debounceThreshold)
   return false
 end
 
+
+function BufferSnapshot.hasContent(bufferData)
+  if not bufferData then return false end
+
+  -- New-style: {items=[...], fluids=[...]}
+  if type(bufferData.items) == "table" and #bufferData.items > 0 then
+    return true
+  end
+  if type(bufferData.fluids) == "table" and #bufferData.fluids > 0 then
+    return true
+  end
+
+  -- Old-style: buffer IS the array
+  if bufferData[1] ~= nil then return true end
+
+  return false
+end
 --- Update buffer data from exec_broker (time-based debounce)
 --- Stores bufferData, computes checksum, compares with previous.
 --- Returns true when the same checksum has been stable for >= debounceWindow seconds.
 --- @param bufferData table data from bufferFeeder with .items and .fluids
 --- @return boolean true if buffer is stable (ready to transition)
+--- Check if a buffer actually has any content
+--- @param bufferData table
+--- @return boolean
 function BufferSnapshot:update(bufferData)
-  if not bufferData then
+  if not bufferData or not BufferSnapshot.hasContent(bufferData) then
+    -- Empty buffer: reset stability but don't start a window
     self._lastBuffer = nil
     self._lastChecksum = nil
     self._stableCount = 0
     self._lastTimestamp = nil
+    self._stableSince = nil
     return false
   end
 
   local checksum = BufferSnapshot.generateChecksum(bufferData)
   local now = os.time()
 
-  -- Track transition from different checksum → same checksum
   if self._lastChecksum and self._lastChecksum == checksum then
     if self._stableSince then
       local elapsed = now - self._stableSince
       if elapsed >= self._debounceWindow then
         self._stableCount = (self._stableCount or 0) + 1
         self._lastTimestamp = now
+        self._lastBuffer = bufferData
+        self._lastChecksum = checksum
         return true
       end
     end
     self._stableCount = (self._stableCount or 0) + 1
   else
-    -- Checksum changed — start new stability window
+    -- Checksum changed — start fresh stability window
     self._stableCount = 1
     self._stableSince = now
   end
@@ -151,6 +172,7 @@ function BufferSnapshot:update(bufferData)
 
   return false
 end
+
 
 --- Get separated snapshot data: items and fluids
 --- @return table {items = {...}, fluids = {...}}
