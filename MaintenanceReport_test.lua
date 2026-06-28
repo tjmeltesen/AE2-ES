@@ -458,9 +458,9 @@ local function runTests()
   return passed, failed, errors
 end
 
--- Run
-local mrModule = dofile(arg and arg[1] or "MaintenanceReport.lua") or MaintenanceReport
-_MaintenanceReport = mrModule  -- keep reference for debugging
+-- Run: load module explicitly (not from arg[1] which may be '-e' in embedded runs)
+MaintenanceReport = dofile("MaintenanceReport.lua") or MaintenanceReport
+_G.MaintenanceReport = MaintenanceReport  -- ensure available globally
 
 local p, f, errs = runTests()
 if f > 0 then

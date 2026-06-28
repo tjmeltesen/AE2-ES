@@ -123,12 +123,16 @@ for test_file in standalone_tests:
     test_path = os.path.join(project_root, test_file)
     if os.path.exists(test_path):
         try:
-            # Determine the module file name from test file naming convention
-            mod_file = test_file.replace('_test.lua', '.lua').replace('-test.lua', '.lua')
-            mod_path = os.path.join(project_root, mod_file)
-            # Load module into global
-            lua.execute(f'MaintenanceReport = dofile({repr(mod_path)})')
-            # Run the test (it uses arg[1] or falls back to MaintenanceReport global)
+            # Derive module name from test filename
+            mod_file = test_file.replace('_test.lua', '.lua')
+            # Only pre-load if the module file is different from the test file
+            if mod_file != test_file:
+                mod_name = os.path.splitext(os.path.basename(mod_file))[0]
+                mod_path = os.path.join(project_root, mod_file)
+                # Load module into the global it expects (only if module file exists)
+                if os.path.exists(mod_path):
+                    lua.execute(f'{mod_name} = dofile({repr(mod_path)})')
+            # Run the test
             lua.execute(f'dofile({repr(test_path)})')
         except Exception as e:
             print(f"  ERROR in {test_file}: {e}")

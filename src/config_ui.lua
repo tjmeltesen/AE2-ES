@@ -468,6 +468,8 @@ function ConfigUI:detectComponents()
     meController = nil,
     meInterfaces = {},
     gtMachines = {},
+    inventoryControllers = {},
+    tankControllers = {},
     misc = {},
   }
 
@@ -499,6 +501,12 @@ function ConfigUI:detectComponents()
       result.meController = entry
     elseif name == "me_interface" then
       table.insert(result.meInterfaces, entry)
+    elseif name == "inventory_controller" then
+      entry.controllerFace = self:_detectControllerFace(address, "inventory")
+      table.insert(result.inventoryControllers, entry)
+    elseif name == "tank_controller" or name == "fluid_controller" then
+      entry.controllerFace = self:_detectControllerFace(address, "tank")
+      table.insert(result.tankControllers, entry)
     elseif name:find("gt_machine") or name:find("^gt_") then
       table.insert(result.gtMachines, entry)
     else
@@ -527,6 +535,37 @@ function ConfigUI:findComponent(typeName)
       return entry
     end
   end
+  return nil
+end
+
+--- Detect which face of a storage controller connects to inventories/tanks.
+-- Uses pcall-protected proxy checks against getInventorySize (for inventory
+-- controllers) or getTankCount (for tank/fluid controllers) on each side.
+-- @param address  string  component address
+-- @param ctrlType string  "inventory" or "tank"
+-- @return number or nil  side constant (0-5), or nil if undetectable
+function ConfigUI:_detectControllerFace(address, ctrlType)
+  local component = self._component or safeRequire("component")
+  if not component then return nil end
+
+  local ok, proxy = pcall(component.proxy, address)
+  if not ok or not proxy then return nil end
+
+  local sides = {0, 1, 2, 3, 4, 5}  -- bottom, top, back, front, left, right
+  for _, side in ipairs(sides) do
+    if ctrlType == "inventory" then
+      local sizeOk, size = pcall(function() return proxy.getInventorySize(side) end)
+      if sizeOk and type(size) == "number" and size > 0 then
+        return side
+      end
+    elseif ctrlType == "tank" then
+      local countOk, count = pcall(function() return proxy.getTankCount(side) end)
+      if countOk and type(count) == "number" and count > 0 then
+        return side
+      end
+    end
+  end
+
   return nil
 end
 
@@ -874,6 +913,11 @@ function ConfigUI:buildExecConfig()
             machineType = machineType,
             hardwareAddress = addr,
             proxy = proxy,
+            laneId = laneId,
+            interfaceAddress = lane.interfaceAddress
+              or (cfg.machineTransposers and cfg.machineTransposers[laneId]
+                  and cfg.machineTransposers[laneId].dualInterface)
+              or nil,
           })
         else
           -- Stub when MachineNode not available
@@ -912,6 +956,15 @@ function ConfigUI:buildExecConfig()
     heartbeatInterval = cfg.heartbeatInterval or 2.0,
     debounceWindow    = cfg.debounceWindow or 1.5,
   }
+
+  -- Buffer and database addresses (expected by exec_broker)
+  local itemBuf = cfg.itemBufferAddr
+  if not itemBuf or itemBuf == '' then
+    itemBuf = cfg.centralBufferAddr
+  end
+  execConfig.itemBufferAddr = itemBuf or ''
+  execConfig.fluidBufferAddr = cfg.fluidBufferAddr or ''
+  execConfig.databaseAddr = cfg.databaseAddr or ''
 
   return execConfig
 end

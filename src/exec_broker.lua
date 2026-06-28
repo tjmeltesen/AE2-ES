@@ -728,8 +728,9 @@ function ExecBroker:_transmitTelemetry()
     end
   end
 
-  -- Build payload
-  local payload = self._M.TelemetryPayload.build(self._brokerId, {
+  -- Build payload (TelemetryPayload.build takes a single params table)
+  local payload = self._M.TelemetryPayload.build({
+    brokerId    = self._brokerId,
     queueLength = self._queue:length(),
     machines    = hwMatrix,
     alerts      = alerts,

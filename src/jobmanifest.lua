@@ -51,14 +51,25 @@ function JobManifest.new(jobId, inputs)
   self._processingLog = jit.processingLog
   self._errorLog = jit.errorLog
 
+  -- Field aliases for exec_broker compatibility
+  self.id = jobId
+  self.status = self.state
+  self.updatedAt = self.createdAt
+
   return self
 end
 
 --- Bind a machine to this job for processing
---- @param machineIndex number
---- @param machineNode table MachineNode abstraction
+--- @param machineIndex number or string (address when single-arg)
+--- @param machineNode table MachineNode abstraction (optional)
 function JobManifest:bindHardware(machineIndex, machineNode)
+  if machineNode == nil and type(machineIndex) == 'string' then
+    machineNode = { address = machineIndex }
+    -- exec_broker backward compat: set assignedMachine for root-level API compat
+    self.assignedMachine = machineIndex
+  end
   self._hardwareBinds[machineIndex] = machineNode
+  return true
 end
 
 --- Transition to the next state
@@ -67,6 +78,7 @@ end
 function JobManifest:updateState(newState)
   if not STATE[newState] then return false end
   self.state = newState
+  self.status = newState
   return true
 end
 
