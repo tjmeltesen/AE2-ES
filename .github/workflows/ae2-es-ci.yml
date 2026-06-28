@@ -169,7 +169,15 @@ jobs:
           cp "$GITHUB_WORKSPACE/src/MachineNode.lua" "$MACHINE_DIR/" 2>/dev/null || true
           cp "$GITHUB_WORKSPACE/src/BufferSnapshot.lua" "$MACHINE_DIR/" 2>/dev/null || true
           cp "$GITHUB_WORKSPACE/JobManifest.lua" "$MACHINE_DIR/" 2>/dev/null || true
-          cp "$GITHUB_WORKSPACE/src/telemetrypayload.lua" "$MACHINE_DIR/" 2>/dev/null || true
+          cp "$GITHUB_WORKSPACE/src/telemetrypayload.lua" "$MACHINE_DIR/telemetry_payload.lua" 2>/dev/null || true
+          cp "$GITHUB_WORKSPACE/MaintenanceReport.lua" "$MACHINE_DIR/MaintenanceReport.lua" 2>/dev/null || true
+          cp "$GITHUB_WORKSPACE/src/hal.lua" "$MACHINE_DIR/hardware_abstraction_layer.lua" 2>/dev/null || true
+          # Create writable home directory for config save tests
+          mkdir -p /home 2>/dev/null || true
+          # Add sides stub (needed by hal)
+          cat > "$MACHINE_DIR/lib/sides.lua" << 'STUBEOF'
+          return { north=1, south=2, east=3, west=4, top=5, bottom=6, front=3, back=2, left=4, right=5 }
+          STUBEOF
           # Copy OCEmu component mocks (real OC API implementations)
           mkdir -p "$MACHINE_DIR/lib"
           cp -r /tmp/ocemu/src/component "$MACHINE_DIR/lib/component"
