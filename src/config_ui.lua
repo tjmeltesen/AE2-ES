@@ -991,11 +991,45 @@ function ConfigUI:buildExecConfig()
       if szOk and type(sz) == 'number' and sz > 0 then
         for slot = 1, math.min(sz, 128) do
           local stOk, stack = pcall(proxy.getStackInSlot, proxy, side, slot)
-          if stOk and stack and stack.size and stack.size > 0 then
+          -- getStackInSlot may not include .size on GTNH controllers —
+          -- use getSlotStackSize for the actual count
+          local count = 0
+          if stack then
+            if stack.size and stack.size > 0 then
+              count = stack.size
+            else
+              local cntOk, cnt = pcall(proxy.getSlotStackSize, proxy, side, slot)
+              if cntOk and type(cnt) == 'number' then count = cnt end
+            end
+          end
+          if stOk and stack and count > 0 then
             table.insert(contents, {
               name = stack.name or stack.label or 'unknown',
               label = stack.label or stack.name or 'unknown',
-              size = stack.size,
+              size = count,
+            })
+          end
+        end
+      end
+      return contents
+    end
+
+    -- Fluid buffer reader: tank_controller API (getTankCount + getFluidInTank)
+    local function _readFluidBuffer(addr, side)
+      if not addr or addr == '' then return {} end
+      local ok, proxy = pcall(component.proxy, addr)
+      if not ok or not proxy then return {} end
+      local contents = {}
+      local tcOk, tankCount = pcall(proxy.getTankCount, proxy, side)
+      if tcOk and type(tankCount) == 'number' and tankCount > 0 then
+        for tank = 1, math.min(tankCount, 32) do
+          local flOk, fluid = pcall(proxy.getFluidInTank, proxy, side, tank)
+          if flOk and fluid and fluid.label then
+            local lvOk, level = pcall(proxy.getTankLevel, proxy, side, tank)
+            table.insert(contents, {
+              name = fluid.name or fluid.label or 'unknown',
+              label = fluid.label or 'unknown',
+              amount = (lvOk and level) or 0,
             })
           end
         end

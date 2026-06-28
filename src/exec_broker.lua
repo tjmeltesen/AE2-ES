@@ -124,7 +124,12 @@ function ExecBroker.new(config)
   end
 
   -- Create HAL instance
-  local hal = M.HAL:new(config.halConfig or {})
+  -- Build halConfig: accept nested form (from buildExecConfig) or flat form (from saved config)
+  local halConfig = config.halConfig or {}
+  if config.halSideMap and not halConfig.sideMap then
+    halConfig.sideMap = config.halSideMap
+  end
+  local hal = M.HAL:new(halConfig)
 
   -- Create BufferSnapshot
   local snapshot = config.snapshot or M.BufferSnapshot.new(config.debounceWindow or 1.5)
@@ -255,11 +260,22 @@ function ExecBroker.new(config)
           if szOk and type(sz) == "number" and sz > 0 then
             for slot = 1, math.min(sz, 128) do
               local stOk, stack = pcall(proxy.getStackInSlot, proxy, itemSide, slot)
-              if stOk and stack and stack.size and stack.size > 0 then
+              -- getStackInSlot may not include .size on GTNH controllers —
+              -- use getSlotStackSize for the actual count
+              local count = 0
+              if stack then
+                if stack.size and stack.size > 0 then
+                  count = stack.size
+                else
+                  local cntOk, cnt = pcall(proxy.getSlotStackSize, proxy, itemSide, slot)
+                  if cntOk and type(cnt) == "number" then count = cnt end
+                end
+              end
+              if stOk and stack and count > 0 then
                 table.insert(items, {
                   name = stack.name or stack.label or "unknown",
                   label = stack.label or stack.name or "unknown",
-                  size = stack.size,
+                  size = count,
                 })
               end
             end
