@@ -237,6 +237,59 @@ function ExecBroker.new(config)
     _eventPullFiltered= config.eventPullFiltered,
   }, ExecBroker)
 
+  -- Auto-create bufferFeeder from addresses if not provided
+  -- (config loaded from disk has addresses but no feeder function)
+  if self._bufferFeeder == nil and (self._itemBufferAddr ~= "" or self._fluidBufferAddr ~= "") then
+    local ibAddr = self._itemBufferAddr
+    local fbAddr = self._fluidBufferAddr
+    local component = safeRequire("component")
+    local itemSide = self._hal:resolveSide("itemBuffer") or 0
+    local fluidSide = self._hal:resolveSide("fluidBuffer") or 1
+    self._bufferFeeder = function()
+      local items, fluids = {}, {}
+      -- Item buffer: inventory_controller uses getInventorySize + getStackInSlot
+      if component and ibAddr ~= "" then
+        local ok, proxy = pcall(component.proxy, ibAddr)
+        if ok and proxy then
+          local szOk, sz = pcall(proxy.getInventorySize, proxy, itemSide)
+          if szOk and type(sz) == "number" and sz > 0 then
+            for slot = 1, math.min(sz, 128) do
+              local stOk, stack = pcall(proxy.getStackInSlot, proxy, itemSide, slot)
+              if stOk and stack and stack.size and stack.size > 0 then
+                table.insert(items, {
+                  name = stack.name or stack.label or "unknown",
+                  label = stack.label or stack.name or "unknown",
+                  size = stack.size,
+                })
+              end
+            end
+          end
+        end
+      end
+      -- Fluid buffer: tank_controller uses getTankCount + getFluidInTank
+      if component and fbAddr ~= "" then
+        local ok, proxy = pcall(component.proxy, fbAddr)
+        if ok and proxy then
+          local tcOk, tankCount = pcall(proxy.getTankCount, proxy, fluidSide)
+          if tcOk and type(tankCount) == "number" and tankCount > 0 then
+            for tank = 1, math.min(tankCount, 32) do
+              local flOk, fluid = pcall(proxy.getFluidInTank, proxy, fluidSide, tank)
+              if flOk and fluid and fluid.label then
+                local lvOk, level = pcall(proxy.getTankLevel, proxy, fluidSide, tank)
+                table.insert(fluids, {
+                  name = fluid.name or fluid.label or "unknown",
+                  label = fluid.label or "unknown",
+                  amount = (lvOk and level) or 0,
+                })
+              end
+            end
+          end
+        end
+      end
+      return { items = items, fluids = fluids }
+    end
+  end
+
   return self
 end
 
