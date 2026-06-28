@@ -175,6 +175,8 @@ jobs:
           -- Stub OC component library for module loading
           package.loaded["component"] = { list = function() return function() end end, proxy = function() return {} end, isAvailable = function() return false end }
           package.loaded["event"] = { pull = function() end, listen = function() end }
+          package.loaded["sides"] = { north = 1, south = 2, east = 3, west = 4, top = 5, bottom = 6 }
+          package.loaded["serialization"] = { serialize = function(v) return tostring(v) end }
           local results = { passed = 0, failed = 0 }
           local function test(name, fn)
             local ok, err = pcall(fn)
