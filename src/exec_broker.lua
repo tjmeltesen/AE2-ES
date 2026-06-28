@@ -471,7 +471,7 @@ function ExecBroker:_transferForJob(addr, active)
   end
 
   -- Transfer fluids if the machine has fluid capabilities
-  local machine = self._machines[addr] or self._machines[entry.laneId]
+  local machine = self._machines[addr]
   if machine then
     local hasFluidCap = self._hal:hasCapability(
       machine:getMachineType(),
@@ -537,7 +537,7 @@ end
 -- @param active  table   active job entry
 -- @return string  status
 function ExecBroker:_checkProcessingJob(addr, active)
-  local machine = self._machines[addr] or self._machines[entry.laneId]
+  local machine = self._machines[addr]
   if not machine then
     active.manifest:fault("Machine node missing for " .. addr)
     active.phase = ExecBroker.PHASES.CLEANUP
@@ -641,7 +641,7 @@ end
 -- @param addr    string  machine address
 -- @param active  table   active job entry
 function ExecBroker:_cleanupJob(addr, active)
-  local machine = self._machines[addr] or self._machines[entry.laneId]
+  local machine = self._machines[addr]
   local manifest = active.manifest
 
   -- Flush the ME interface (ghost-item cleanup)
@@ -926,7 +926,7 @@ end
 -- @param addr  string
 -- @return MachineNode or nil
 function ExecBroker:getMachine(addr)
-  return self._machines[laneId] or self._machines[addr]
+  return self._machines[addr]
 end
 
 --- Get all machine nodes.

@@ -40,10 +40,10 @@ HAL.CAP_PARALLEL          = 256     -- Machine supports parallel processing
 HAL.CAP_OVERCLOCK         = 512     -- Machine supports overclocking
 
 -- Aggregate: common machine profiles
-HAL.CAP_PROFILE_BASIC     = HAL.CAP_ITEM_INPUT | HAL.CAP_ITEM_OUTPUT | HAL.CAP_POWER_EU
-HAL.CAP_PROFILE_FLUID     = HAL.CAP_ITEM_INPUT | HAL.CAP_ITEM_OUTPUT | HAL.CAP_FLUID_INPUT | HAL.CAP_FLUID_OUTPUT | HAL.CAP_POWER_EU
-HAL.CAP_PROFILE_STEAM     = HAL.CAP_ITEM_INPUT | HAL.CAP_ITEM_OUTPUT | HAL.CAP_POWER_STEAM
-HAL.CAP_PROFILE_MULTI     = HAL.CAP_ITEM_INPUT | HAL.CAP_ITEM_OUTPUT | HAL.CAP_FLUID_INPUT | HAL.CAP_FLUID_OUTPUT | HAL.CAP_POWER_EU | HAL.CAP_MAINTENANCE_HATCH
+HAL.CAP_PROFILE_BASIC     = HAL.CAP_ITEM_INPUT + HAL.CAP_ITEM_OUTPUT + HAL.CAP_POWER_EU
+HAL.CAP_PROFILE_FLUID     = HAL.CAP_ITEM_INPUT + HAL.CAP_ITEM_OUTPUT + HAL.CAP_FLUID_INPUT + HAL.CAP_FLUID_OUTPUT + HAL.CAP_POWER_EU
+HAL.CAP_PROFILE_STEAM     = HAL.CAP_ITEM_INPUT + HAL.CAP_ITEM_OUTPUT + HAL.CAP_POWER_STEAM
+HAL.CAP_PROFILE_MULTI     = HAL.CAP_ITEM_INPUT + HAL.CAP_ITEM_OUTPUT + HAL.CAP_FLUID_INPUT + HAL.CAP_FLUID_OUTPUT + HAL.CAP_POWER_EU + HAL.CAP_MAINTENANCE_HATCH
 
 -- ===========================================================================
 -- Fault codes (extended, maps to and from MachineNode maintenance flags)
@@ -228,7 +228,7 @@ end
 -- @return boolean
 function HAL:hasCapability(machineType, flag)
   local caps = self:getCapabilities(machineType)
-  return (caps & flag) ~= 0
+  return (caps / flag) % 2 >= 1  -- bit test (Lua 5.2 compat: no bitwise &)
 end
 
 -- ===========================================================================
@@ -711,16 +711,16 @@ end
 -- @return string
 function HAL:capsToString(flags)
   local parts = {}
-  if (flags & HAL.CAP_ITEM_INPUT) ~= 0 then table.insert(parts, "ITEM_INPUT") end
-  if (flags & HAL.CAP_ITEM_OUTPUT) ~= 0 then table.insert(parts, "ITEM_OUTPUT") end
-  if (flags & HAL.CAP_FLUID_INPUT) ~= 0 then table.insert(parts, "FLUID_INPUT") end
-  if (flags & HAL.CAP_FLUID_OUTPUT) ~= 0 then table.insert(parts, "FLUID_OUTPUT") end
-  if (flags & HAL.CAP_POWER_EU) ~= 0 then table.insert(parts, "POWER_EU") end
-  if (flags & HAL.CAP_POWER_STEAM) ~= 0 then table.insert(parts, "POWER_STEAM") end
-  if (flags & HAL.CAP_RECIPE_SELECT) ~= 0 then table.insert(parts, "RECIPE_SELECT") end
-  if (flags & HAL.CAP_MAINTENANCE_HATCH) ~= 0 then table.insert(parts, "MAINTENANCE_HATCH") end
-  if (flags & HAL.CAP_PARALLEL) ~= 0 then table.insert(parts, "PARALLEL") end
-  if (flags & HAL.CAP_OVERCLOCK) ~= 0 then table.insert(parts, "OVERCLOCK") end
+  if (flags / HAL.CAP_ITEM_INPUT) % 2 >= 1 then table.insert(parts, "ITEM_INPUT") end
+  if (flags / HAL.CAP_ITEM_OUTPUT) % 2 >= 1 then table.insert(parts, "ITEM_OUTPUT") end
+  if (flags / HAL.CAP_FLUID_INPUT) % 2 >= 1 then table.insert(parts, "FLUID_INPUT") end
+  if (flags / HAL.CAP_FLUID_OUTPUT) % 2 >= 1 then table.insert(parts, "FLUID_OUTPUT") end
+  if (flags / HAL.CAP_POWER_EU) % 2 >= 1 then table.insert(parts, "POWER_EU") end
+  if (flags / HAL.CAP_POWER_STEAM) % 2 >= 1 then table.insert(parts, "POWER_STEAM") end
+  if (flags / HAL.CAP_RECIPE_SELECT) % 2 >= 1 then table.insert(parts, "RECIPE_SELECT") end
+  if (flags / HAL.CAP_MAINTENANCE_HATCH) % 2 >= 1 then table.insert(parts, "MAINTENANCE_HATCH") end
+  if (flags / HAL.CAP_PARALLEL) % 2 >= 1 then table.insert(parts, "PARALLEL") end
+  if (flags / HAL.CAP_OVERCLOCK) % 2 >= 1 then table.insert(parts, "OVERCLOCK") end
   return table.concat(parts, ", ")
 end
 
