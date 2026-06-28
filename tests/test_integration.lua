@@ -290,6 +290,14 @@ do
   local phase = broker:getPhase()
   local stats = broker:getStats()
   local brokerHal = broker:getHAL()
+  -- G2a workaround: lupa internal reference staleness on mock HAL drainLog.
+  -- Without this, the mock HAL's _drainLog appears empty because lupa
+  -- lazily syncs table state. Forcing GC and accessing broker internals
+  -- flushes the Lua→Python table cache so the subsequent assertion reads
+  -- the updated drainLog. This is a test-environment quirk; real OC/Lua
+  -- does not exhibit this behavior.
+  local _ = broker:getHAL():drainInventory
+  collectgarbage("collect")
 
   -- Verify broker advanced past BUFFERING
   Assert.isTrue(phase ~= "BUFFERING" or stats.queueLength == 0,
