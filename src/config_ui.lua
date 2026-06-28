@@ -846,9 +846,7 @@ function ConfigUI:_serializeValue(val)
   end
   if t == "string" then
     -- Escape control characters and backslashes
-    local escaped = val:gsub("\\", "\\\\"):gsub("\"", "\\\""):gsub("\n", "\\n"):gsub("
-", "\
-"):gsub("\t", "\\t")
+    local escaped = val:gsub("\\", "\\\\"):gsub("\"", "\\\""):gsub("\n", "\\n"):gsub("\r", "\\r"):gsub("\t", "\\t")
     return "\"" .. escaped .. "\""
   end
   -- Tables / functions / userdata — cannot serialize, return placeholder
