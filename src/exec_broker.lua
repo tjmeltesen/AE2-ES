@@ -69,12 +69,12 @@ end
 -- Callers can override any module via config.modules.
 local DEFAULT_MODULES = {
   JobManifest        = function() return safeRequire("JobManifest") end,
-  MachineNode        = function() return safeRequire("MachineNode") end,
-  BufferSnapshot     = function() return safeRequire("BufferSnapshot") end,
+  MachineNode        = function() return safeRequire("src.MachineNode") end,
+  BufferSnapshot     = function() return safeRequire("src.BufferSnapshot") end,
   JobQueue           = function() return safeRequire("JobQueue") end,
-  HAL                = function() return safeRequire("hardware_abstraction_layer") end,
+  HAL                = function() return safeRequire("src.hal") end,
   MaintenanceReport  = function() return safeRequire("MaintenanceReport") end,
-  TelemetryPayload   = function() return safeRequire("telemetry_payload") end,
+  TelemetryPayload   = function() return safeRequire("src.telemetrypayload") end,
 }
 
 -- ===========================================================================
@@ -992,19 +992,26 @@ if not package.loaded["src.exec_broker"] then
     local config = nil
 
     if cfgFile then
-      local raw = cfgFile:read("*a")
+      local raw = cfgFile:read("*a")  -- ← was missing entirely
       cfgFile:close()
-      local ok2, result = pcall(loadstring("return " .. raw))
-      if ok2 and type(result) == "table" then
-        config = result
-        print("Loaded config from " .. cfgPath)
+      local chunk, loadErr = load(raw)
+      if chunk then
+        local ok2, result = pcall(chunk)
+        if ok2 and type(result) == "table" then
+          config = result
+          print("Loaded config from " .. cfgPath)
+        else
+          print("Config parse error: " .. tostring(result))
+        end
+      else
+        print("Config syntax error: " .. tostring(loadErr))
       end
-    end
+    end  -- ← one end closes if cfgFile, not two
 
     if not config then
       print("No config found. Running config UI first...")
       local ConfigUI = require("src.config_ui")
-      local ui = ConfigUI:new()
+      local ui = ConfigUI.new()
       config = ui:run()
       if not config then
         error("Configuration cancelled — cannot start broker without config")
