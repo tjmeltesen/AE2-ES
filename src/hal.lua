@@ -409,10 +409,10 @@ function HAL:performFluidTransfer(fromSide, toSide, count, fromTank)
   end
 
   local transposer = component.transposer
-  local ok, ok2, transferred = pcall(transposer.transferFluid, transposer, fromSide, toSide, count, fromTank)
+  local ok, transferred = pcall(transposer.transferFluid, transposer, fromSide, toSide, count, fromTank)
 
   if not ok then
-    self._lastError = "HAL:performFluidTransfer() — transposer error: " .. tostring(ok2)
+    self._lastError = "HAL:performFluidTransfer() — transposer error: " .. tostring(transferred)
     return nil, self._lastError
   end
 
