@@ -15,6 +15,19 @@ Graceful fallback: if GPU/screen not available, uses basic terminal I/O.
 Cooperative multitasking: yields between screens via os.sleep(0).
 ]]--
 
+-- DEBUG: Wrap io.write to catch table args
+local _orig_write = io.write
+io.write = function(...)
+  local args = {...}
+  for i, v in ipairs(args) do
+    if type(v) == "table" then
+      print("DEBUG io.write got TABLE at arg " .. i .. ": " .. tostring(v))
+      args[i] = tostring(v)
+    end
+  end
+  return _orig_write(table.unpack(args))
+end
+
 local ConfigUI = {}
 ConfigUI.__index = ConfigUI
 
@@ -73,8 +86,9 @@ local DEFAULT_CONFIG = {
   centralBufferAddr = "",  -- deprecated, kept for migration
   itemBufferAddr = "",     -- drawers/storage for items
   fluidBufferAddr = "",    -- hatches/tanks for fluids
+  databaseAddr    = "",    -- OC database (stores item stack data for transfer)
   -- Per-lane transposer config (set during machine config)
-  -- { [laneName] = { adapter, dualInterface, transposerAddr, machineAddr, pull, push, return } }
+  -- { [laneName] = { dualInterface, transposerAddr, machineAddr, pull, push, return } }
   machineTransposers = {},
   pollInterval      = 0.5,
   heartbeatInterval = 2.0,
@@ -806,9 +820,11 @@ function ConfigUI:buildExecConfig()
   -- Build machines table
   local machines = {}
   if cfg.machines then
-    for i, addr in ipairs(cfg.machines) do
+    for _, lane in ipairs(cfg.machines) do
+      local addr = lane.machineAddr or lane.address
+      local laneId = lane.laneId or addr
       if addr and addr ~= "" then
-        local machineType = (cfg.machineTypes and cfg.machineTypes[addr]) or "gt_machine"
+        local machineType = (cfg.machineTypes and cfg.machineTypes[laneId]) or "gt_machine"
         local proxy = nil
         if component then
           local ok, p = pcall(component.proxy, addr)
@@ -1097,6 +1113,19 @@ function ConfigUI:runSetupWizard()
   local hatchAddr = self:_readLine("Fluid buffer address (hatch, or skip): ", "")
   self._config.fluidBufferAddr = hatchAddr
 
+  -- Step 5c: Database
+  self:_clear()
+  self:_drawTitle("Step 5c: Database")
+  self:_writeLine(3, "The OC database stores item stack information.", COLOR_CYAN)
+  self:_writeLine(4, "The broker reads available items from this database")
+  self:_writeLine(5, "and sets them into each lane's dual interface.")
+  self:_writeLine(6, "")
+  self:_writeLine(7, "Required — the broker cannot transfer items without it.", COLOR_YELLOW)
+  self:_writeLine(8, "")
+
+  local dbAddr = self:_readLine("Database address: ", "")
+  self._config.databaseAddr = dbAddr
+
   -- Step 6: Lane configuration
   self:_clear()
   self:_drawTitle("Step 6: Lane Configuration")
@@ -1118,7 +1147,6 @@ function ConfigUI:runSetupWizard()
       table.insert(self._config.machines, {
         laneId = laneId,
         machineAddr = cfg.machineAddr,
-        adapter = cfg.adapter,
       })
       self:_setupMachineType(cfg.machineAddr)
     end
@@ -1208,13 +1236,13 @@ function ConfigUI:_selectComponent(typeName, detected, prompt)
   return addr
 end
 
---- Configure a lane: adapter, dual interface, transposer, machine adapter, and sides.
+--- Configure a lane: dual interface, transposer, machine adapter, and sides.
 -- Each lane has:
---   adapter        — OC adapter giving computer access to this lane
 --   dualInterface  — subnet dual interface (items flow here from central buffer)
 --   transposerAddr — item transposer (pulls from subnet, pushes to machine)
 --   machineAddr    — GT machine adapter (the actual machine controller)
 --   pull/push/return — transposer sides
+-- OC adapters are handled natively by the component API — no address needed.
 -- @param laneId  string  identifier for this lane (e.g. "Lane 1")
 function ConfigUI:_setupTransposerSides(laneId)
   self:_clear()
@@ -1222,10 +1250,10 @@ function ConfigUI:_setupTransposerSides(laneId)
   self:_writeLine(3, "Configure the components for this lane:", COLOR_CYAN)
   self:_writeLine(4, "")
   self:_writeLine(5, "Each lane has:", COLOR_CYAN)
-  self:_writeLine(6, "  - OC Adapter        — lets the computer control this lane", COLOR_GRAY)
-  self:_writeLine(7, "  - Dual Interface    — subnet connection (items arrive here)", COLOR_GRAY)
-  self:_writeLine(8, "  - Item Transposer   — moves items into the machine", COLOR_GRAY)
-  self:_writeLine(9, "  - Machine Adapter   — the GT machine itself", COLOR_GRAY)
+  self:_writeLine(6, "  - Dual Interface    — subnet connection (items arrive here)", COLOR_GRAY)
+  self:_writeLine(7, "  - Item Transposer   — moves items into the machine", COLOR_GRAY)
+  self:_writeLine(8, "  - Machine Adapter   — the GT machine itself", COLOR_GRAY)
+  self:_writeLine(9, "  (OC Adapter is handled natively — no address needed)", COLOR_DIM)
   self:_writeLine(10, "")
   self:_pressAnyKey()
 
@@ -1236,7 +1264,6 @@ function ConfigUI:_setupTransposerSides(laneId)
   -- Component addresses
   self:_clear()
   self:_drawTitle(laneId .. " — Component Addresses")
-  local adapter = self:_readLine("OC Adapter address: ", "")
   local dualIface = self:_readLine("Dual Interface address: ", "")
   local transposer = self:_readLine("Item Transposer address: ", "")
   local machine = self:_readLine("Machine Adapter address: ", "")
@@ -1257,7 +1284,6 @@ function ConfigUI:_setupTransposerSides(laneId)
   local returnSide = self:_readNumber("RETURN side (from machine output)", 5, 0, 5)
 
   self._config.machineTransposers[laneId] = {
-    adapter        = adapter,
     dualInterface  = dualIface,
     transposerAddr = transposer,
     machineAddr    = machine,
@@ -1303,6 +1329,7 @@ function ConfigUI:_showConfigSummary()
   self:_writeLine(y, "  Redstone I/O:       " .. (cfg.redstoneAddress ~= "" and cfg.redstoneAddress or "(none)"), self:_statusColor(cfg.redstoneAddress)); y = y + 1
   self:_writeLine(y, "  Item Buffer:       " .. (cfg.itemBufferAddr ~= "" and cfg.itemBufferAddr or "(none)"), self:_statusColor(cfg.itemBufferAddr)); y = y + 1
   self:_writeLine(y, "  Fluid Buffer:      " .. (cfg.fluidBufferAddr ~= "" and cfg.fluidBufferAddr or "(none)"), self:_statusColor(cfg.fluidBufferAddr)); y = y + 1
+  self:_writeLine(y, "  Database:          " .. (cfg.databaseAddr ~= "" and cfg.databaseAddr or "(none)"), self:_statusColor(cfg.databaseAddr)); y = y + 1
   self:_writeLine(y, "  Lanes:              " .. tostring(#(cfg.machines or {})) .. " configured"); y = y + 1
   self:_writeLine(y, "  Poll Interval:      " .. tostring(cfg.pollInterval) .. "s"); y = y + 1
   self:_writeLine(y, "  Heartbeat Interval: " .. tostring(cfg.heartbeatInterval) .. "s"); y = y + 1
@@ -1509,7 +1536,8 @@ function ConfigUI:_editMachines()
     if count == 0 then
       self:_writeLine(5, "No machines configured.", COLOR_YELLOW)
     else
-      for i, addr in ipairs(self._config.machines) do
+      for _, lane in ipairs(self._config.machines) do
+        local addr = lane.machineAddr or lane.address or ""
         local mt = (self._config.machineTypes and self._config.machineTypes[addr]) or "basic"
         local mtLabel = ({
           [1] = "[Basic]", [4] = "[Fluid]", [32] = "[Steam]", [128] = "[Multi]"
@@ -1577,7 +1605,8 @@ function ConfigUI:_reorderMachines()
 
   self:_clear()
   self:_drawTitle("Reorder Machines")
-  for i, addr in ipairs(machines) do
+  for _, lane in ipairs(machines) do
+      local addr = lane.machineAddr or lane.address
     self:_writeLine(2 + i, string.format("  %d. %s", i, addr), COLOR_CYAN)
   end
 
@@ -1595,7 +1624,8 @@ end
 function ConfigUI:_detectAndAddMachines()
   local detected = self:detectComponents()
   local existing = {}
-  for _, addr in ipairs(self._config.machines) do
+  for _, lane in ipairs(self._config.machines) do
+    local addr = lane.machineAddr or lane.address
     existing[addr] = true
   end
 
@@ -1716,10 +1746,11 @@ function ConfigUI:_runConnectivityTest()
     y = y + 1
     self:_writeLine(y, "  Machines:", COLOR_DIM)
     y = y + 1
-    for i, addr in ipairs(self._config.machines) do
+    for _, lane in ipairs(self._config.machines) do
+      local addr = lane.machineAddr or lane.address or ""
       local mOk, mMsg = self:testComponent(addr)
-      table.insert(results, { name = "Machine " .. i, ok = mOk, msg = mMsg })
-      self:_writeLine(y, string.format("    %d. %s - %s", i,
+      table.insert(results, { name = "Machine " .. lane.laneId, ok = mOk, msg = mMsg })
+      self:_writeLine(y, string.format("    %s: %s - %s", lane.laneId or addr:sub(1,8),
         (mOk and "OK" or "FAIL"),
         mMsg:sub(1, 60)),
         mOk and COLOR_GREEN or COLOR_RED)
@@ -1775,9 +1806,10 @@ function ConfigUI:_showConnectionStatus()
 
   if count > 0 then
     y = y + 1
-    for i, addr in ipairs(self._config.machines) do
+    for _, lane in ipairs(self._config.machines) do
+      local addr = lane.machineAddr or lane.address or ""
       local short = addr:sub(1, 36)
-      self:_writeLine(y, string.format("    %d. %s", i, short), COLOR_GRAY)
+      self:_writeLine(y, string.format("    %s: %s", lane.laneId or ("#" .. _), short), COLOR_GRAY)
       y = y + 1
     end
   end
