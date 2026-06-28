@@ -177,8 +177,19 @@ jobs:
           package.loaded["src.exec_broker"] = true
           package.loaded["src.supervisor"] = true
           package.loaded["supervisor.config_ui"] = true
-          -- OCEmu boot requires sides stub
+          -- OCEmu's component mocks are per-type (component/computer.lua, etc.)
+          -- OC expects a top-level 'component' global — bridge them together
           package.loaded["sides"] = { north=1,south=2,east=3,west=4,top=5,bottom=6 }
+          package.loaded["component"] = {
+            list = function() return function() end end,
+            proxy = function(addr) return { address = addr, type = "unknown" } end,
+            isAvailable = function() return true end,
+            type = function() return "unknown" end,
+            slot = function() return -1 end,
+            methods = function() return {} end,
+          }
+          package.loaded["event"] = { pull = function() end, listen = function() end }
+          package.loaded["computer"] = { uptime = function() return 0 end, freeMemory = function() return 1024 end }
           local results = { passed = 0, failed = 0 }
           local function test(name, fn)
             local ok, err = pcall(fn)
