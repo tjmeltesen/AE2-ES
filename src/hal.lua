@@ -322,8 +322,18 @@ function HAL:drainInventory(fromSide, toSide)
 
   for slot = 1, size do
     local stackOk, stack = pcall(transposer.getStackInSlot, transposer, fromSide, slot)
-    if stackOk and stack and stack.size and stack.size > 0 then
-      local okMove, moved = pcall(transposer.transferItem, transposer, fromSide, toSide, stack.size, slot, nil)
+    -- getStackInSlot may not include .size on GTNH — use getSlotStackSize fallback
+    local count = 0
+    if stack then
+      if stack.size and stack.size > 0 then
+        count = stack.size
+      else
+        local cntOk, cnt = pcall(transposer.getSlotStackSize, transposer, fromSide, slot)
+        if cntOk and type(cnt) == "number" then count = cnt end
+      end
+    end
+    if stackOk and stack and count > 0 then
+      local okMove, moved = pcall(transposer.transferItem, transposer, fromSide, toSide, count, slot, nil)
       if okMove and moved then
         total = total + moved
       end
@@ -357,10 +367,16 @@ function HAL:getInventoryContents(side)
   for slot = 1, size do
     local stackOk, stack = pcall(transposer.getStackInSlot, transposer, side, slot)
     if stackOk and stack then
+      -- getStackInSlot may not include .size on GTNH — use getSlotStackSize fallback
+      local sz = stack.size
+      if not sz or sz == 0 then
+        local cntOk, cnt = pcall(transposer.getSlotStackSize, transposer, side, slot)
+        if cntOk and type(cnt) == "number" then sz = cnt end
+      end
       table.insert(contents, {
         slot    = slot,
         label   = stack.label,
-        size    = stack.size,
+        size    = sz,
         maxSize = stack.maxSize,
         hasNBT  = stack.hasNBT or false,
         name    = stack.name,     -- mod:id format when available
@@ -574,9 +590,15 @@ function HAL:checkMaintenanceState(machineNode)
         local ghostCount = 0
         for slot = 1, size do
           local stackOk, stack = pcall(transposer.getStackInSlot, transposer, ifaceSide, slot)
-          if stackOk and stack and stack.size and stack.size > 0 then
-            ghostCount = ghostCount + stack.size
-          end
+          if stackOk and stack then
+            local sz = stack.size
+            if not sz or sz <= 0 then
+              local cntOk, cnt = pcall(transposer.getSlotStackSize, transposer, ifaceSide, slot)
+              if cntOk and type(cnt) == "number" then sz = cnt end
+            end
+            if sz and sz > 0 then
+              ghostCount = ghostCount + sz
+            end
           os.sleep(0)  -- yield per slot
         end
         result.ghostItems = ghostCount
@@ -686,7 +708,13 @@ function HAL:snapshotInventoryToDB(side, dbAddress, dbStart)
 
   for slot = 1, size do
     local stackOk, stack = pcall(transposer.getStackInSlot, transposer, side, slot)
-    if stackOk and stack and stack.size and stack.size > 0 and stack.name then
+    if stackOk and stack and stack.name then
+      local sz = stack.size
+      if not sz or sz <= 0 then
+        local cntOk, cnt = pcall(transposer.getSlotStackSize, transposer, side, slot)
+        if cntOk and type(cnt) == "number" then sz = cnt end
+      end
+      if sz and sz > 0 then
       if not seen[stack.name] then
         seen[stack.name] = true
         local storeOk, result = pcall(transposer.store, transposer, side, slot, dbAddr, dbSlot)
