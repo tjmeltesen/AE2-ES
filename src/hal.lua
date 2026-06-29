@@ -70,6 +70,9 @@ local DEFAULT_SIDE_MAP = {
   transposerInput  = sides.north,  -- Transposer pulls from drawer here
   transposerOutput = sides.south,  -- Transposer drops into machine input bus
   transposerReturn = sides.east,   -- Transposer pulls machine output → return chest
+  dualInterface = sides.north,   -- Transposer side facing Dual Interface
+  returnChest   = sides.east,    -- Transposer side facing Return Chest
+  fluidExport   = sides.north,   -- Interface side for fluid conduit
 }
 
 -- ===========================================================================
@@ -599,6 +602,7 @@ function HAL:checkMaintenanceState(machineNode)
             if sz and sz > 0 then
               ghostCount = ghostCount + sz
             end
+          end
           os.sleep(0)  -- yield per slot
         end
         result.ghostItems = ghostCount
@@ -724,6 +728,7 @@ function HAL:snapshotInventoryToDB(side, dbAddress, dbStart)
         end
       end
     end
+  end
     os.sleep(0)
   end
 
@@ -768,6 +773,148 @@ function HAL:faultToString(faultCode)
     [HAL.FAULT_PROXY_ERROR]      = "Proxy Error",
   }
   return labels[faultCode] or "Unknown (" .. tostring(faultCode) .. ")"
+end
+
+-- ===========================================================================
+-- Database operations (JIT: store buffer refs as AE2-compatible entries)
+-- Database has max 9 slots -- caller must manage slot allocation.
+-- ===========================================================================
+
+--- Store an item/fluid reference in the OC Database.
+-- @param dbAddress  string   OC Database component address
+-- @param slot       number   1-indexed slot (1-9)
+-- @param name       string   Unlocalized item/fluid name
+-- @param damage     number   Item damage value (0 for fluids)
+-- @param nbt        string|nil  JSON NBT data (nil if none)
+-- @return boolean
+function HAL:storeDatabaseEntry(dbAddress, slot, name, damage, nbt)
+  self:clearError()
+  local db = self:getProxy(dbAddress)
+  if not db then return false, self._lastError end
+  local ok, err = pcall(db.set, slot, name, damage, nbt)
+  if not ok then
+    self._lastError = "HAL:storeDatabaseEntry() — db.set[" .. slot .. "] failed: " .. tostring(err)
+    return false, self._lastError
+  end
+  return true
+end
+
+--- Clear a single Database slot.
+-- @param dbAddress  string
+-- @param slot       number   1-indexed
+-- @return boolean
+function HAL:clearDatabaseSlot(dbAddress, slot)
+  self:clearError()
+  local db = self:getProxy(dbAddress)
+  if not db then return false, self._lastError end
+  local ok, err = pcall(db.clear, slot)
+  if not ok then
+    self._lastError = "HAL:clearDatabaseSlot() — db.clear[" .. slot .. "] failed: " .. tostring(err)
+    return false, self._lastError
+  end
+  return true
+end
+
+-- ===========================================================================
+-- ME Interface configuration
+-- ===========================================================================
+
+--- Configure an ME Interface slot to stock items from a Database reference.
+-- @param ifaceAddress  string   ME Interface component address
+-- @param slot          number   1-indexed config slot on interface (1-9)
+-- @param dbAddress     string   Database component address
+-- @param dbSlot        number   Database slot holding item reference
+-- @param count         number   How many items to stock
+-- @return boolean
+function HAL:configureInterfaceStocking(ifaceAddress, slot, dbAddress, dbSlot, count)
+  self:clearError()
+  local iface = self:getProxy(ifaceAddress)
+  if not iface then return false, self._lastError end
+  local ok, err = pcall(iface.setInterfaceConfiguration, slot, dbAddress, dbSlot, count)
+  if not ok then
+    self._lastError = "HAL:configureInterfaceStocking() — failed: " .. tostring(err)
+    return false, self._lastError
+  end
+  return true
+end
+
+--- Clear an ME Interface config slot.
+-- @param ifaceAddress  string
+-- @param slot          number   1-indexed
+-- @return boolean
+function HAL:clearInterfaceSlot(ifaceAddress, slot)
+  self:clearError()
+  local iface = self:getProxy(ifaceAddress)
+  if not iface then return false, self._lastError end
+  local ok, err = pcall(iface.setInterfaceConfiguration, slot)
+  if not ok then
+    self._lastError = "HAL:clearInterfaceSlot() — failed: " .. tostring(err)
+    return false, self._lastError
+  end
+  return true
+end
+
+--- Configure fluid export on an ME Interface side.
+-- @param ifaceAddress  string
+-- @param side          number   Side constant for fluid export
+-- @param dbAddress     string   Database component address
+-- @param dbSlot        number   Database slot holding fluid reference
+-- @return boolean
+function HAL:configureFluidExport(ifaceAddress, side, dbAddress, dbSlot)
+  self:clearError()
+  local iface = self:getProxy(ifaceAddress)
+  if not iface then return false, self._lastError end
+  local ok, err = pcall(iface.setFluidInterfaceConfiguration, side, dbAddress, dbSlot)
+  if not ok then
+    self._lastError = "HAL:configureFluidExport() — failed: " .. tostring(err)
+    return false, self._lastError
+  end
+  return true
+end
+
+--- Clear fluid export config on an interface side.
+-- @param ifaceAddress  string
+-- @param side          number
+-- @return boolean
+function HAL:clearFluidExport(ifaceAddress, side)
+  self:clearError()
+  local iface = self:getProxy(ifaceAddress)
+  if not iface then return false, self._lastError end
+  local ok, err = pcall(iface.setFluidInterfaceConfiguration, side)
+  if not ok then
+    self._lastError = "HAL:clearFluidExport() — failed: " .. tostring(err)
+    return false, self._lastError
+  end
+  return true
+end
+
+-- ===========================================================================
+-- Inventory inspection
+-- ===========================================================================
+
+--- Check how many items are in an inventory slot via transposer.
+-- Used to verify AE2 has stocked the interface before transferring.
+-- @param side  number   Transposer side facing the inventory
+-- @param slot  number   1-indexed slot
+-- @return number  stack size (0 if empty), or nil + error
+function HAL:checkSlotCount(side, slot)
+  self:clearError()
+  if not component.isAvailable("transposer") then
+    self._lastError = "HAL:checkSlotCount() — transposer not available"
+    return nil, self._lastError
+  end
+  local xp = component.transposer
+  local ok, stack = pcall(xp.getStackInSlot, side, slot)
+  if not ok then
+    self._lastError = "HAL:checkSlotCount() — getStackInSlot failed: " .. tostring(stack)
+    return nil, self._lastError
+  end
+  if not stack then return 0 end
+  if stack.size and stack.size > 0 then return stack.size end
+  -- GTNH quirk: .size may be absent; try getSlotStackSize
+  local cntOk, cnt = pcall(xp.getSlotStackSize, side, slot)
+  if cntOk and type(cnt) == "number" then return cnt end
+  return 0
 end
 
 return HAL

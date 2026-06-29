@@ -188,7 +188,13 @@ function BufferSnapshot:getSnapshotData()
   -- New-style buffer: {items=[...], fluids=[...]}
   if type(buffer.items) == "table" then
     for _, v in ipairs(buffer.items) do
-      table.insert(items, { label = v.label, size = v.size, name = v.name })
+      table.insert(items, {
+        label  = v.label,
+        size   = v.size,
+        name   = v.name,
+        damage = v.damage,
+        nbt    = v.nbt,
+      })
     end
   end
   if type(buffer.fluids) == "table" then
@@ -200,7 +206,14 @@ function BufferSnapshot:getSnapshotData()
   -- Old-style backward compat: buffer IS the items array
   if buffer[1] ~= nil and type(buffer[1]) == "table" then
     for _, v in ipairs(buffer) do
-      table.insert(items, { label = v.label, size = v.size, name = v.name, count = v.count })
+      table.insert(items, {
+        label  = v.label,
+        size   = v.size,
+        name   = v.name,
+        count  = v.count,
+        damage = v.damage,
+        nbt    = v.nbt,
+      })
     end
   end
 
