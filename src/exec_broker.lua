@@ -281,15 +281,23 @@ function ExecBroker.new(config)
               -- Diagnostic: log every slot that has a name/label
               if feederLogger and stack and (stack.name or stack.label) then
                 feederLogger:debug(string.format(
-                  "BUFFERING: slot[%d] name=%s size=%s label=%s count=%d stOk=%s",
+                  "BUFFERING: slot[%d] name=%s size=%s label=%s count=%d dmg=%d nbt=%s stOk=%s",
                   slot, tostring(stack.name or "nil"), tostring(stack.size or "nil"),
-                  tostring(stack.label or "nil"), count, tostring(stOk)))
+                  tostring(stack.label or "nil"), count,
+                  tonumber(stack.damage or 0), tostring(stack.hasTag and "yes" or "no"),
+                  tostring(stOk)))
               end
               if stOk and stack and count > 0 then
+                local nbt = nil
+                if stack.hasTag and stack.tag then
+                  nbt = stack.tag
+                end
                 table.insert(items, {
                   name = stack.name or stack.label or "unknown",
                   label = stack.label or stack.name or "unknown",
                   size = count,
+                  damage = stack.damage or 0,
+                  nbt = nbt,
                 })
               end
             end
@@ -508,13 +516,14 @@ function ExecBroker:_phaseALLOCATING()
     assignedAt  = os.time(),
   }
 
-  -- Perform transfer immediately (single-tick: ALLOCATING → PROCESSING)
+  -- Perform transfer (multi-tick: store→stock→wait→pull→verify→clear)
   self:_transferForJob(target.address, self._activeJobs[target.address])
 
-  -- Check if transfer succeeded or faulted
-  if self._activeJobs[target.address].phase == ExecBroker.PHASES.CLEANUP then
-    -- Transfer faulted — go to cleanup
+  local activeJob = self._activeJobs[target.address]
+  if activeJob.phase == ExecBroker.PHASES.CLEANUP then
     return ExecBroker.PHASES.CLEANUP
+  elseif activeJob.phase == ExecBroker.PHASES.TRANSFERRING then
+    return ExecBroker.PHASES.TRANSFERRING
   end
 
   return ExecBroker.PHASES.PROCESSING
@@ -556,8 +565,17 @@ function ExecBroker:_phaseTRANSFERRING()
   return ExecBroker.PHASES.PROCESSING
 end
 
---- Transfer items for a specific job from central buffer to machine interface.
--- @param addr    string  machine address
+--- Transfer items for a specific job using Database + Dual Interface model.
+-- Full pipeline per job:
+--   1. JIT: Store manifest items/fluids in Database (max 9 slots, items only)
+--   2. Configure Dual Interface to stock from Database
+--   3. Wait for AE2 to deliver items to interface (multi-tick polling)
+--   4. Transposer: Dual Interface → Machine Input Bus
+--   5. Verify central buffer + interface are empty
+--   6. Clear interface config + Database slots
+--   7. → PROCESSING
+-- Fluids: configure fluid export on interface (fire-and-forget, conduit auto-pulls)
+-- @param addr    string  machine address (laneId)
 -- @param active  table   active job entry
 function ExecBroker:_transferForJob(addr, active)
   local manifest = active.manifest
@@ -567,65 +585,229 @@ function ExecBroker:_transferForJob(addr, active)
     manifest:updateState("TRANSFERRING")
   end
 
-  -- Resolve sides: output from central buffer, input to machine interface
-  local fromSide = self._hal:resolveSide("itemBuffer")
-  local toSide   = self._hal:resolveSide("interface")
-
-  if self._logger then
-    self._logger:debug(string.format(
-      "TRANSFER: fromSide=%s toSide=%s addr=%s",
-      tostring(fromSide), tostring(toSide), tostring(addr)))
+  -- Initialize transfer state on first tick
+  if active._transferStep == nil then
+    active._transferStep = "store"     -- steps: store → stock → wait → pull → verify → clear
+    active._transferTick = 0
+    active._transferDbSlots = { items = {}, fluids = {} }
   end
 
-  if not fromSide or not toSide then
-    if self._logger then
-      self._logger:error("TRANSFER: side resolution failed — check halSideMap")
-    end
-    -- Cannot resolve sides — fault the job
-    manifest:fault("Cannot resolve transfer sides")
+  local laneId = addr
+  local laneCfg = self._machineTransposers[laneId]
+  if not laneCfg then
+    manifest:fault("No transposer config for lane " .. laneId)
     active.phase = ExecBroker.PHASES.CLEANUP
     return
   end
 
-  -- Drain items from central buffer to machine interface
-  local transferred = self._hal:drainInventory(fromSide, toSide)
-  if self._logger then
-    self._logger:debug(string.format(
-      "TRANSFER: drainInventory returned %s", tostring(transferred)))
+  local ifaceAddr = laneCfg.dualInterface
+  if not ifaceAddr or ifaceAddr == "" then
+    manifest:fault("No Dual Interface for lane " .. laneId)
+    active.phase = ExecBroker.PHASES.CLEANUP
+    return
   end
-  if transferred == nil then
-    -- HAL error — check if this is a recoverable error
-    local halErr = self._hal:getLastError()
-    if halErr then
-      -- Fault the job with HAL error context
-      manifest:fault("Transfer failed: " .. halErr)
+
+  -- Resolve transposer sides
+  local ifaceSide  = self._hal:resolveSide("dualInterface") or laneCfg.pull or 0
+  local inputSide  = self._hal:resolveSide("inputBus")      or laneCfg.push or 0
+  local returnSide = self._hal:resolveSide("returnChest")    or laneCfg.return_ or 0
+
+  if ifaceSide == 0 or inputSide == 0 then
+    manifest:fault("Cannot resolve transfer sides for lane " .. laneId)
+    active.phase = ExecBroker.PHASES.CLEANUP
+    return
+  end
+
+  -- Save sides for CLEANUP
+  active._laneSides = {
+    ifaceSide  = ifaceSide,
+    inputSide  = inputSide,
+    returnSide = returnSide,
+    ifaceAddr  = ifaceAddr,
+  }
+
+  local dbAddr = self._databaseAddr
+  local hal = self._hal
+  local inputs = manifest.inputs
+
+  active._transferTick = active._transferTick + 1
+
+  -- =========================================================================
+  -- STEP: store — Write items/fluids to Database (JIT, max 9 item slots)
+  -- =========================================================================
+  if active._transferStep == "store" then
+    if dbAddr and dbAddr ~= "" then
+      -- Items: store in slots 1..N (max 9)
+      if inputs.items then
+        for i, item in ipairs(inputs.items) do
+          if i > 9 then break end  -- hard cap: Database has 9 slots
+          local name = item.name or item.label or "unknown"
+          local damage = item.damage or 0
+          local nbt = item.nbt or nil
+          hal:storeDatabaseEntry(dbAddr, i, name, damage, nbt)
+          active._transferDbSlots.items[i] = i
+          if self._logger then
+            self._logger:debug(string.format("TRANSFER: DB[%d] ← %s dmg=%d nbt=%s",
+              i, name, damage, nbt and "yes" or "no"))
+          end
+        end
+      end
+      -- Fluids: store after items in remaining 9-slot pool
+      if inputs.fluids then
+        local fluidStart = #active._transferDbSlots.items + 1
+        for i, fluid in ipairs(inputs.fluids) do
+          local slot = fluidStart + i - 1
+          if slot > 9 then break end
+          local name = fluid.name or fluid.label or "unknown"
+          hal:storeDatabaseEntry(dbAddr, slot, name, 0, nil)
+          active._transferDbSlots.fluids[i] = slot
+          if self._logger then
+            self._logger:debug(string.format("TRANSFER: DB[%d] ← %s (fluid)", slot, name))
+          end
+        end
+      end
+    end
+    active._transferStep = "stock"
+    -- fall through to stock on same tick
+  end
+
+  -- =========================================================================
+  -- STEP: stock — Configure Dual Interface from Database entries
+  -- =========================================================================
+  if active._transferStep == "stock" then
+    if dbAddr and dbAddr ~= "" then
+      -- Configure item stocking
+      for i, dbSlot in ipairs(active._transferDbSlots.items) do
+        local ok = hal:configureInterfaceStocking(ifaceAddr, i, dbAddr, dbSlot, 64)
+        if ok and self._logger then
+          self._logger:info(string.format("TRANSFER: lane %s iface[%d] ← DB[%d] x64", laneId, i, dbSlot))
+        end
+      end
+      -- Configure fluid export (fire-and-forget)
+      for _, dbSlot in ipairs(active._transferDbSlots.fluids) do
+        local fluidSide = self._hal:resolveSide("fluidExport") or 0
+        if fluidSide ~= 0 then
+          hal:configureFluidExport(ifaceAddr, fluidSide, dbAddr, dbSlot)
+          if self._logger then
+            self._logger:info(string.format("TRANSFER: lane %s fluid export side %d ← DB[%d]", laneId, fluidSide, dbSlot))
+          end
+        end
+      end
+    end
+    active._transferStep = "wait"
+    -- yield to next tick; AE2 needs time to pull items from network
+    return
+  end
+
+  -- =========================================================================
+  -- STEP: wait — Poll interface inventory until AE2 has stocked items
+  -- =========================================================================
+  if active._transferStep == "wait" then
+    if active._transferTick < 3 then
+      -- Give AE2 at least ~1.5 seconds (3 ticks at 0.5s pollInterval)
+      if self._logger then
+        self._logger:debug(string.format("TRANSFER: lane %s waiting for AE2 (tick %d)...", laneId, active._transferTick))
+      end
+      return
+    end
+
+    -- Check if interface has items
+    local stocked = true
+    if #active._transferDbSlots.items > 0 then
+      local sz = hal:checkSlotCount(ifaceSide, 1)
+      if sz == nil or sz == 0 then
+        stocked = false
+        if self._logger then
+          self._logger:debug(string.format("TRANSFER: lane %s interface slot 1 still empty (sz=%s)", laneId, tostring(sz)))
+        end
+      end
+    end
+
+    if stocked then
+      active._transferStep = "pull"
+      if self._logger then self._logger:info("TRANSFER: lane " .. laneId .. " AE2 stocked interface, pulling to input bus") end
+      -- fall through to pull on same tick
+    elseif active._transferTick > 20 then
+      -- Timeout (~10 seconds) — fault the job
+      manifest:fault("AE2 stocking timeout for lane " .. laneId)
       active.phase = ExecBroker.PHASES.CLEANUP
+      return
+    else
+      return  -- keep waiting
+    end
+  end
+
+  -- =========================================================================
+  -- STEP: pull — Transposer: Dual Interface → Machine Input Bus
+  -- =========================================================================
+  if active._transferStep == "pull" then
+    if #active._transferDbSlots.items > 0 then
+      local moved = hal:performInventoryTransfer(ifaceSide, inputSide, 64)
+      if self._logger then
+        self._logger:info(string.format("TRANSFER: lane %s iface→input moved %s items", laneId, tostring(moved or 0)))
+      end
+    end
+    active._transferStep = "verify"
+    -- yield to next tick for verification
+    return
+  end
+
+  -- =========================================================================
+  -- STEP: verify — Check interface is empty (all items moved to input bus)
+  -- =========================================================================
+  if active._transferStep == "verify" then
+    local ifaceEmpty = true
+    if #active._transferDbSlots.items > 0 then
+      local remaining = hal:checkSlotCount(ifaceSide, 1)
+      if remaining and remaining > 0 then
+        ifaceEmpty = false
+        if self._logger then
+          self._logger:debug(string.format("TRANSFER: lane %s interface still has %d items, re-pulling", laneId, remaining))
+        end
+        -- Try pulling again
+        hal:performInventoryTransfer(ifaceSide, inputSide, remaining)
+        return  -- yield and re-verify next tick
+      end
+    end
+
+    if ifaceEmpty then
+      if self._logger then self._logger:info("TRANSFER: lane " .. laneId .. " interface empty, clearing") end
+      active._transferStep = "clear"
+      -- fall through to clear on same tick
+    else
       return
     end
   end
 
-  -- Transfer fluids if the machine has fluid capabilities
-  local machine = self._machines[addr]
-  if machine then
-    local hasFluidCap = self._hal:hasCapability(
-      machine:getMachineType(),
-      self._hal.CAP_FLUID_INPUT
-    )
-
-    if hasFluidCap then
-      local fromHatchSide = self._hal:resolveSide("inputHatch")
-      -- Fluid enters machine via input hatch (auto-delivered by ender fluid conduit)
-      -- Output returns to separate network — no outputHatch needed here
-      local toHatchSide   = self._hal:resolveSide("fluidBuffer")
-      if fromHatchSide then
-        self._hal:performFluidTransfer(fromHatchSide, toHatchSide or fromHatchSide)
+  -- =========================================================================
+  -- STEP: clear — Clear interface config + Database slots, then → PROCESSING
+  -- =========================================================================
+  if active._transferStep == "clear" then
+    -- Clear interface item config slots
+    for i = 1, #active._transferDbSlots.items do
+      hal:clearInterfaceSlot(ifaceAddr, i)
+    end
+    -- Clear fluid export
+    local fluidSide = self._hal:resolveSide("fluidExport") or 0
+    if fluidSide ~= 0 then
+      hal:clearFluidExport(ifaceAddr, fluidSide)
+    end
+    -- Clear Database slots
+    if dbAddr and dbAddr ~= "" then
+      for _, slot in ipairs(active._transferDbSlots.items) do
+        hal:clearDatabaseSlot(dbAddr, slot)
+      end
+      for _, slot in ipairs(active._transferDbSlots.fluids) do
+        hal:clearDatabaseSlot(dbAddr, slot)
       end
     end
-  end
+    if self._logger then
+      self._logger:info(string.format("TRANSFER: lane %s complete — iface+DB cleared, → PROCESSING", laneId))
+    end
 
-  -- Transfer complete — move to PROCESSING
-  manifest:updateState("PROCESSING")
-  active.phase = ExecBroker.PHASES.PROCESSING
+    manifest:updateState("PROCESSING")
+    active.phase = ExecBroker.PHASES.PROCESSING
+  end
 end
 
 -- ===========================================================================
@@ -771,31 +953,38 @@ function ExecBroker:_phaseCLEANUP()
   return ExecBroker.PHASES.BUFFERING
 end
 
---- Clean up a single job: flush interface, release machine, update stats.
+--- Clean up a single job: extract leftovers, release machine, update stats.
+-- Interface and Database clearing are handled in TRANSFERRING phase.
 -- @param addr    string  machine address
 -- @param active  table   active job entry
 function ExecBroker:_cleanupJob(addr, active)
   local machine = self._machines[addr]
   local manifest = active.manifest
 
-  -- Flush the ME interface (ghost-item cleanup)
-  if machine then
-    machine:flushInterface()
+  -- 1. Extract leftover items from Machine Input Bus → Return Chest
+  local laneSides = active._laneSides
+  if laneSides and laneSides.returnSide and laneSides.inputSide and laneSides.returnSide ~= 0 then
+    local leftover = self._hal:performInventoryTransfer(
+      laneSides.inputSide, laneSides.returnSide, 64)
+    if self._logger and leftover and leftover > 0 then
+      self._logger:info(string.format(
+        "CLEANUP: lane %s pulled %d leftover items from input bus to return chest",
+        addr, leftover))
+    end
   end
 
-  -- Release the machine
+  -- 2. Release the machine
   if machine then
     local released = machine:releaseJob()
     if not released and machine:hasFault() then
-      -- Faulted machine — clear fault and unlock
       machine:clearFault()
     end
   end
 
-  -- Unbind hardware from manifest
+  -- 3. Unbind hardware from manifest
   manifest:unbindHardware()
 
-  -- Update stats
+  -- 4. Update stats
   if manifest.status == "CLEANUP" then
     manifest:updateState("COMPLETED")
     self._stats.jobsCompleted = self._stats.jobsCompleted + 1
@@ -805,18 +994,15 @@ function ExecBroker:_cleanupJob(addr, active)
     self._stats.totalJobTime = self._stats.totalJobTime + manifest:age()
   end
 
-  -- Log completion to maintenance report
+  -- 5. Log to maintenance report
   local report = self._reports[addr]
   if report then
-    if manifest.faultReason then
-      -- Already logged during fault detection
-    else
-      -- Log successful completion
+    if not manifest.faultReason then
       report:clearFault("Job " .. manifest.id .. " completed successfully")
     end
   end
 
-  -- JIT memory: nil the manifest reference to assist GC
+  -- 6. Nil manifest reference for GC
   active.manifest = nil
 end
 

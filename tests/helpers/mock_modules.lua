@@ -206,6 +206,46 @@ function MockModules.HAL:performFluidTransfer(fromSide, toSide)
   return true, 1000 -- pretend we moved 1000 mB
 end
 
+function MockModules.HAL:storeDatabaseEntry(dbAddress, slot, name, damage, nbt)
+  self._dbEntries = self._dbEntries or {}
+  table.insert(self._dbEntries, { dbAddress = dbAddress, slot = slot, name = name, damage = damage, nbt = nbt })
+  return true
+end
+
+function MockModules.HAL:clearDatabaseSlot(dbAddress, slot)
+  self._clearedSlots = self._clearedSlots or {}
+  table.insert(self._clearedSlots, { dbAddress = dbAddress, slot = slot })
+  return true
+end
+
+function MockModules.HAL:configureInterfaceStocking(ifaceAddress, slot, dbAddress, dbSlot, count)
+  self._stockConfigs = self._stockConfigs or {}
+  table.insert(self._stockConfigs, { ifaceAddress = ifaceAddress, slot = slot, dbAddress = dbAddress, dbSlot = dbSlot, count = count })
+  return true
+end
+
+function MockModules.HAL:clearInterfaceSlot(ifaceAddress, slot)
+  self._clearedIfaces = self._clearedIfaces or {}
+  table.insert(self._clearedIfaces, { ifaceAddress = ifaceAddress, slot = slot })
+  return true
+end
+
+function MockModules.HAL:configureFluidExport(ifaceAddress, side, dbAddress, dbSlot)
+  self._fluidExports = self._fluidExports or {}
+  table.insert(self._fluidExports, { ifaceAddress = ifaceAddress, side = side, dbAddress = dbAddress, dbSlot = dbSlot })
+  return true
+end
+
+function MockModules.HAL:clearFluidExport(ifaceAddress, side)
+  self._fluidClears = self._fluidClears or {}
+  table.insert(self._fluidClears, { ifaceAddress = ifaceAddress, side = side })
+  return true
+end
+
+function MockModules.HAL:checkSlotCount(side, slot)
+  return self._mockSlotCount or 0
+end
+
 function MockModules.HAL:getLastError()
   return self._lastError
 end

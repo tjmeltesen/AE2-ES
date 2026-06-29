@@ -223,7 +223,7 @@ Assert.endTest()
 -- TEST GROUP 2: HAL Interfacing
 -- ===========================================================================
 
-Assert.startTest("G2a: HAL drainInventory called on transfer")
+Assert.startTest("G2a: HAL configureInterfaceStocking called on transfer")
 do
   -- Create mock machines
   local machines = {
@@ -259,7 +259,17 @@ do
   local snap = MockModules.IntegrationSnapshot.new(0.01)
   local broker = ExecBroker.new({
     brokerId = "test-hal-broker",
+    databaseAddr = "db-001",
     machines = machines,
+    machineTransposers = {
+      ["mach-001"] = {
+        dualInterface = "mach-001-iface",
+        transposerAddr = "xp-001",
+        pull = 5,
+        push = 6,
+        return_ = 7,
+      },
+    },
     modules = {
       MachineNode = MockModules.MachineNode,
       BufferSnapshot = { new = function() return snap end },
@@ -281,7 +291,7 @@ do
   snap:update(bufferData)
 
   -- Advance ticks
-  for _ = 1, 20 do
+  for _ = 1, 30 do
     broker:tick()
     mockUptime = mockUptime + 0.1
   end
@@ -290,29 +300,22 @@ do
   local phase = broker:getPhase()
   local stats = broker:getStats()
   local brokerHal = broker:getHAL()
-  -- G2a workaround: lupa internal reference staleness on mock HAL drainLog.
-  -- Without this, the mock HAL's _drainLog appears empty because lupa
-  -- lazily syncs table state. Forcing GC and accessing broker internals
-  -- flushes the Lua→Python table cache so the subsequent assertion reads
-  -- the updated drainLog. This is a test-environment quirk; real OC/Lua
-  -- does not exhibit this behavior.
-  local _ = broker:getHAL():drainInventory
-  collectgarbage("collect")
 
   -- Verify broker advanced past BUFFERING
   Assert.isTrue(phase ~= "BUFFERING" or stats.queueLength == 0,
     "broker advanced past BUFFERING or queue emptied (phase=" .. tostring(phase) .. ")")
 
-  -- Verify HAL was used for transfer
-  Assert.greaterThan(0, #brokerHal._drainLog, "HAL drainInventory was called")
-  if #brokerHal._drainLog > 0 then
-    Assert.equal(3, brokerHal._drainLog[1].from, "drain from side 3 (centralBuffer)")
-    Assert.equal(4, brokerHal._drainLog[1].to, "drain to side 4 (interface)")
+  -- Verify HAL configureInterfaceStocking was called (ae2_transfer model)
+  local configs = brokerHal._stockConfigs or {}
+  Assert.greaterThan(0, #configs, "HAL configureInterfaceStocking was called")
+  if #configs > 0 then
+    Assert.equal("mach-001-iface", configs[1].ifaceAddress or "N/A",
+      "stocking configured for interface")
   end
 end
 Assert.endTest()
 
-Assert.startTest("G2b: HAL fluid transfer called for fluid-capable machines")
+Assert.startTest("G2b: HAL configureFluidExport called for fluid-capable machines")
 do
   local fluidMachine = MockModules.MachineNode.new("fluid-001", {
     status = "AVAILABLE",
@@ -321,7 +324,7 @@ do
   local machines = { ["fluid-001"] = fluidMachine }
 
   local hal = MockModules.HAL.new({
-    sideMap = { centralBuffer = 3, itemBuffer = 3, interface = 4, inputHatch = 1, outputHatch = 0 },
+    sideMap = { centralBuffer = 3, itemBuffer = 3, interface = 4, inputHatch = 1, outputHatch = 0, fluidExport = 5 },
     capabilities = {
       fluid = { "item_input", "item_output", "fluid_input", "fluid_output" },
     },
@@ -329,13 +332,23 @@ do
 
   local bufferData = {
     items = { { name = "minecraft:iron_ingot", size = 32, damage = 0 } },
-    fluids = {},
+    fluids = { { name = "water", amount = 1000 } },
   }
 
   local snap = MockModules.IntegrationSnapshot.new(0.01)
   local broker = ExecBroker.new({
     brokerId = "test-fluid-broker",
+    databaseAddr = "db-001",
     machines = machines,
+    machineTransposers = {
+      ["fluid-001"] = {
+        dualInterface = "fluid-001-iface",
+        transposerAddr = "xp-002",
+        pull = 5,
+        push = 6,
+        return_ = 7,
+      },
+    },
     modules = {
       MachineNode = MockModules.MachineNode,
       BufferSnapshot = { new = function() return snap end },
@@ -354,14 +367,15 @@ do
   })
 
   snap:update(bufferData)
-  for _ = 1, 20 do
+  for _ = 1, 30 do
     broker:tick()
     mockUptime = mockUptime + 0.1
   end
 
-  -- Verify fluid transfer was attempted (or at minimum drainInventory was called)
+  -- Verify configureFluidExport was called (ae2_transfer fluid model)
   local brokerHal = broker:getHAL()
-  Assert.greaterThan(0, #brokerHal._drainLog + #brokerHal._fluidLog, "HAL performed transfers")
+  local fluidExports = brokerHal._fluidExports or {}
+  Assert.greaterThan(0, #fluidExports, "HAL configureFluidExport was called")
 
   -- Verify capability check was called
   Assert.isTrue(brokerHal:hasCapability("fluid", "fluid_input"), "fluid machine has fluid_input capability")
@@ -469,7 +483,17 @@ do
   local snap = MockModules.IntegrationSnapshot.new(0.01)
   local broker = ExecBroker.new({
     brokerId = "test-rs-broker",
+    databaseAddr = "db-001",
     machines = machines,
+    machineTransposers = {
+      ["mach-r1"] = {
+        dualInterface = "mach-r1-iface",
+        transposerAddr = "xp-003",
+        pull = 5,
+        push = 6,
+        return_ = 7,
+      },
+    },
     modules = {
       MachineNode = MockModules.MachineNode,
       BufferSnapshot = { new = function() return snap end },
@@ -488,7 +512,7 @@ do
   })
 
   snap:update(bufferData)
-  for _ = 1, 20 do
+  for _ = 1, 30 do
     broker:tick()
     mockUptime = mockUptime + 0.1
   end
@@ -538,6 +562,14 @@ do
   local broker = ExecBroker.new({
     brokerId = "test-fault-broker",
     machines = machines,
+    databaseAddr = "db-001",
+    machineTransposers = {
+      ["mach-fault"] = {
+        dualInterface = "mach-fault-iface",
+        transposerAddr = "xp-f1",
+        pull = 5, push = 6, return_ = 7,
+      },
+    },
     modules = {
       MachineNode = MockModules.MachineNode,
       BufferSnapshot = { new = function() return snap end },
@@ -619,6 +651,14 @@ do
   local broker = ExecBroker.new({
     brokerId = "test-fault2-broker",
     machines = machines,
+    databaseAddr = "db-001",
+    machineTransposers = {
+      ["mach-f2"] = {
+        dualInterface = "mach-f2-iface",
+        transposerAddr = "xp-f2",
+        pull = 5, push = 6, return_ = 7,
+      },
+    },
     modules = {
       MachineNode = MockModules.MachineNode,
       BufferSnapshot = { new = function() return snap end },
@@ -637,7 +677,7 @@ do
   })
 
   snap:update(bufferData)
-  for _ = 1, 10 do
+  for _ = 1, 30 do
     broker:tick()
     mockUptime = mockUptime + 0.1
   end
@@ -688,6 +728,19 @@ do
   local broker = ExecBroker.new({
     brokerId = "test-multi-fault",
     machines = machines,
+    databaseAddr = "db-001",
+    machineTransposers = {
+      ["multi-1"] = {
+        dualInterface = "multi-1-iface",
+        transposerAddr = "xp-m1",
+        pull = 5, push = 6, return_ = 7,
+      },
+      ["multi-2"] = {
+        dualInterface = "multi-2-iface",
+        transposerAddr = "xp-m2",
+        pull = 5, push = 6, return_ = 7,
+      },
+    },
     modules = {
       MachineNode = MockModules.MachineNode,
       BufferSnapshot = { new = function() return snap end },
@@ -706,7 +759,7 @@ do
   })
 
   snap:update(bufferData)
-  for _ = 1, 10 do
+  for _ = 1, 30 do
     broker:tick()
     mockUptime = mockUptime + 0.1
   end
