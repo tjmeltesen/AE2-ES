@@ -592,7 +592,14 @@ function ExecBroker:_transferForJob(addr, active)
     active._transferDbSlots = { items = {}, fluids = {} }
   end
 
+  -- addr is the machine hardware address; resolve to laneId for config lookup
   local laneId = addr
+  for _, entry in ipairs(self._machineList) do
+    if entry.address == addr then
+      laneId = entry.laneId
+      break
+    end
+  end
   local laneCfg = self._machineTransposers[laneId]
   if not laneCfg then
     manifest:fault("No transposer config for lane " .. laneId)
