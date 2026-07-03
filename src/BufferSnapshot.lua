@@ -37,9 +37,20 @@ function BufferSnapshot.generateChecksum(buffer)
   for _, k in ipairs(keys) do
     local v = buffer[k]
     if type(v) == "table" then
-      table.insert(parts, string.format("%s:%s:%d",
-        tostring(k), tostring(v.label or v.name or "?"),
-        tonumber(v.size or v.count or 0) or 0))
+      -- If v[1] is a table, v is a container of entries (items/fluids array)
+      -- recurse to hash each entry; otherwise hash as a single entry (old-style)
+      if type(v[1]) == "table" then
+        for ei, ev in ipairs(v) do
+          table.insert(parts, string.format("%s[%d]:%s:%d",
+            tostring(k), ei,
+            tostring(ev.label or ev.name or "?"),
+            tonumber(ev.size or ev.count or ev.amount or 0) or 0))
+        end
+      else
+        table.insert(parts, string.format("%s:%s:%d",
+          tostring(k), tostring(v.label or v.name or "?"),
+          tonumber(v.size or v.count or v.amount or 0) or 0))
+      end
     else
       table.insert(parts, string.format("%s:%d", tostring(k), tonumber(v) or 0))
     end
@@ -76,6 +87,7 @@ function BufferSnapshot.new(arg)
   self._lastChecksum = nil
   self._stableCount = 0
   self._lastTimestamp = nil
+  self._stableConfirmed = false
   return self
 end
 
@@ -153,11 +165,20 @@ function BufferSnapshot:update(bufferData)
     if self._stableSince then
       local elapsed = now - self._stableSince
       if elapsed >= self._debounceWindow then
-        self._stableCount = (self._stableCount or 0) + 1
-        self._lastTimestamp = now
-        self._lastBuffer = bufferData
-        self._lastChecksum = checksum
-        return true
+        if self._stableConfirmed then
+          -- ponytail: 2-phase confirmation — first stability pass restarts the
+          -- window, second pass returns true. Prevents locking in partial AE2
+          -- data when the network cache settles mid-deposit.
+          self._stableCount = (self._stableCount or 0) + 1
+          self._lastTimestamp = now
+          self._lastBuffer = bufferData
+          self._lastChecksum = checksum
+          return true
+        else
+          -- First confirmation: restart window for one more poll cycle
+          self._stableConfirmed = true
+          self._stableSince = now
+        end
       end
     end
     self._stableCount = (self._stableCount or 0) + 1
@@ -165,6 +186,7 @@ function BufferSnapshot:update(bufferData)
     -- Checksum changed — start fresh stability window
     self._stableCount = 1
     self._stableSince = now
+    self._stableConfirmed = false
   end
 
   self._lastBuffer = bufferData
@@ -194,12 +216,19 @@ function BufferSnapshot:getSnapshotData()
         name   = v.name,
         damage = v.damage,
         nbt    = v.nbt,
+        fluidDrop = v.fluidDrop,
       })
     end
   end
   if type(buffer.fluids) == "table" then
     for _, v in ipairs(buffer.fluids) do
-      table.insert(fluids, { label = v.label, amount = v.amount })
+      table.insert(fluids, {
+        name   = v.name,
+        label  = v.label,
+        amount = v.amount,
+        hasTag = v.hasTag,
+        tag    = v.tag,
+      })
     end
   end
 
@@ -227,6 +256,7 @@ function BufferSnapshot:reset()
   self._stableCount = 0
   self._lastTimestamp = nil
   self._stableSince = nil
+  self._stableConfirmed = false
 end
 
 --- Convert this snapshot into a JobManifest

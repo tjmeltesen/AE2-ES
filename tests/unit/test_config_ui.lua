@@ -286,14 +286,13 @@ do
     assert_equal(#(config.machines), 0, "2.1: machines empty by default")
     assert_equal(config.modemAddress, "", "2.1: modemAddress empty by default")
     assert_equal(config.redstoneAddress, "", "2.1: redstoneAddress empty")
-    assert_equal(config.centralBufferAddr, "", "2.1: centralBufferAddr empty")
+    assert_equal(config.meControllerAddr, "", "2.1: meControllerAddr empty")
 
     -- Test 2.2: HAL side map is populated with defaults
     assert_not_nil(config.halSideMap, "2.2: halSideMap exists")
     assert_equal(config.halSideMap.inputBus, 3, "2.2: inputBus -> front")
     assert_equal(config.halSideMap.outputBus, 2, "2.2: outputBus -> back")
     assert_equal(config.halSideMap.interface, 1, "2.2: interface -> top")
-    assert_equal(config.halSideMap.centralBuffer, 0, "2.2: centralBuffer -> bottom")
 
     -- Test 2.3: getConfig returns stored config
     assert_equal(ui:getConfig(), config, "2.3: getConfig same as reset config")
@@ -650,7 +649,7 @@ do
     ui:resetConfig()
 
     -- Test 8.1: All HAL roles have defaults
-    for _, role in ipairs({ "inputBus", "outputBus", "inputHatch", "outputHatch", "interface", "centralBuffer" }) do
+    for _, role in ipairs({ "inputBus", "outputBus", "inputHatch", "outputHatch", "interface" }) do
         local side = ui._config.halSideMap[role]
         assert_not_nil(side, "8.1: HAL role " .. role .. " has a default side")
         assert_true(side >= 0 and side <= 5, "8.1: Side " .. side .. " is valid (0-5)")
@@ -660,9 +659,9 @@ do
     ui._config.halSideMap.inputBus = 4
     assert_equal(ui._config.halSideMap.inputBus, 4, "8.2: inputBus side updated to left")
 
-    -- Test 8.3: Can update centralBuffer
-    ui._config.halSideMap.centralBuffer = 0
-    assert_equal(ui._config.halSideMap.centralBuffer, 0, "8.3: centralBuffer side set to bottom")
+    -- Test 8.3: Can update interface
+    ui._config.halSideMap.interface = 0
+    assert_equal(ui._config.halSideMap.interface, 0, "8.3: interface side set to bottom")
 end
 
 --===========================================================================

@@ -65,8 +65,6 @@ local DEFAULT_SIDE_MAP = {
   inputBus    = sides.north,     -- Where items come in (machine input bus)
   inputHatch  = sides.west,      -- Where fluid comes in (machine input hatch)
   interface   = sides.top,       -- Adjacent ME Interface
-  itemBuffer  = sides.bottom,    -- Storage Drawers (item buffer)
-  fluidBuffer = sides.top,       -- Fluid Hatch (fluid buffer)
   transposerInput  = sides.north,  -- Transposer pulls from drawer here
   transposerOutput = sides.south,  -- Transposer drops into machine input bus
   transposerReturn = sides.east,   -- Transposer pulls machine output → return chest
@@ -245,14 +243,6 @@ end
 -- @return number (side constant) or nil if role unknown
 function HAL:resolveSide(role)
   local side = self._sideMap[role]
-  -- Fallbacks for renamed roles (itemBuffer → centralBuffer and vice versa)
-  if side == nil and role == "itemBuffer" then
-    side = self._sideMap["centralBuffer"]
-  elseif side == nil and role == "fluidBuffer" then
-    side = self._sideMap["centralBuffer"]  -- same physical side historically
-  elseif side == nil and role == "centralBuffer" then
-    side = self._sideMap["itemBuffer"]
-  end
   if side == nil then
     self._lastError = "HAL:resolveSide() — unknown role '" .. tostring(role) .. "'"
     return nil
@@ -276,72 +266,64 @@ end
 -- Wraps transposer.transferItem() with pcall error handling.
 -- Yields (os.sleep(0)) after each slot when count is nil (full transfer).
 -- @param fromSide  number — source side constant
+-- @param transposerAddress string — transposer component address
 -- @param toSide    number — destination side constant
 -- @param count     number|nil — max items to transfer (nil = all)
 -- @param fromSlot  number|nil — source slot (nil = any)
 -- @param toSlot    number|nil — destination slot (nil = any)
 -- @return number of items transferred, or nil + errorMessage on failure
-function HAL:performInventoryTransfer(fromSide, toSide, count, fromSlot, toSlot)
+function HAL:performInventoryTransfer(transposerAddress, fromSide, toSide, count, fromSlot, toSlot)
   self:clearError()
 
-  if not component.isAvailable("transposer") then
+  local transposer = self:getProxy(transposerAddress)
+  if not transposer then
     self._lastError = "HAL:performInventoryTransfer() — transposer not available"
     return nil, self._lastError
   end
-
-  local transposer = component.transposer
-  local ok, result = pcall(transposer.transferItem, transposer, fromSide, toSide, count, fromSlot, toSlot)
+  local ok, result = pcall(transposer.transferItem, fromSide, toSide, count, fromSlot, toSlot)
 
   if not ok then
     self._lastError = "HAL:performInventoryTransfer() — transposer error: " .. tostring(result)
     return nil, self._lastError
   end
 
-  -- Yield after each transfer to avoid TMI errors
   os.sleep(0)
-  return result or 0
+  return result
 end
 
---- Transfer all items from one inventory to another, slot by slot.
--- Iterates all occupied slots in the source and transfers each.
+--- Transfer all items from one inventory to another using the getAllStacks iterator. (WORKING)
 -- @param fromSide  number — source side constant
+-- @param transposerAddress string — transposer component address
 -- @param toSide    number — destination side constant
 -- @return number of total items transferred, or nil + error
-function HAL:drainInventory(fromSide, toSide)
+function HAL:drainInventory(transposerAddress, fromSide, toSide)
   self:clearError()
 
-  if not component.isAvailable("transposer") then
+  local transposer = self:getProxy(transposerAddress)
+  if not transposer then
     self._lastError = "HAL:drainInventory() — transposer not available"
     return nil, self._lastError
   end
-
-  local transposer = component.transposer
   local total = 0
 
-  local sizeOk, size = pcall(transposer.getInventorySize, transposer, fromSide)
-  if not sizeOk or not size or size < 1 then
-    return 0  -- empty or unreachable, nothing to drain
+  -- 1. Grab the iterator (Takes only 1 tick for the entire inventory)
+  local ok, stackSlot = pcall(transposer.getAllStacks, fromSide)
+  if not ok then
+    self._lastError = "HAL:drainInventory() — getAllStacks failed"
+    return nil, self._lastError
   end
+  -- If it didn't return a function, exit
+  local stacks = stackSlot.getAll()
 
-  for slot = 1, size do
-    local stackOk, stack = pcall(transposer.getStackInSlot, transposer, fromSide, slot)
-    -- getStackInSlot may not include .size on GTNH — use getSlotStackSize fallback
-    local count = 0
-    if stack then
-      if stack.size and stack.size > 0 then
-        count = stack.size
-      else
-        local cntOk, cnt = pcall(transposer.getSlotStackSize, transposer, fromSide, slot)
-        if cntOk and type(cnt) == "number" then count = cnt end
-      end
+  -- 2. Slots are 1-indexed, so we start our manual counter at 1
+  for slotIndex, stack in pairs(stacks) do
+    -- OpenComputers usually uses 1-based indexing for slots in transferItem
+    -- We assume the index provided by the array aligns with the slot
+    local okMove, moved = pcall(transposer.transferItem, fromSide, toSide, stack.size, slotIndex)
+    
+    if okMove and moved then
+      total = total + moved
     end
-    if stackOk and stack and count > 0 then
-      local okMove, moved = pcall(transposer.transferItem, transposer, fromSide, toSide, count, slot, nil)
-      if okMove and moved then
-        total = total + moved
-      end
-    end
-    -- Yield between slots
     os.sleep(0)
   end
 
@@ -350,17 +332,16 @@ end
 
 --- Get a snapshot of all items in an inventory.
 -- @param side  number — side constant
+-- @param transposerAddress string — transposer component address
 -- @return table array of {slot, label, size, maxSize, hasNBT}, or nil + error
-function HAL:getInventoryContents(side)
+function HAL:getInventoryContents(transposerAddress, side)
   self:clearError()
-
-  if not component.isAvailable("transposer") then
+  local transposer = self:getProxy(transposerAddress)
+  if not transposer then
     self._lastError = "HAL:getInventoryContents() — transposer not available"
     return nil, self._lastError
   end
-
-  local transposer = component.transposer
-  local sizeOk, size = pcall(transposer.getInventorySize, transposer, side)
+  local sizeOk, size = pcall(transposer.getInventorySize, side)
   if not sizeOk or not size then
     self._lastError = "HAL:getInventoryContents() — cannot get inventory size"
     return nil, self._lastError
@@ -368,12 +349,12 @@ function HAL:getInventoryContents(side)
 
   local contents = {}
   for slot = 1, size do
-    local stackOk, stack = pcall(transposer.getStackInSlot, transposer, side, slot)
+    local stackOk, stack = pcall(transposer.getStackInSlot, side, slot)
     if stackOk and stack then
       -- getStackInSlot may not include .size on GTNH — use getSlotStackSize fallback
       local sz = stack.size
       if not sz or sz == 0 then
-        local cntOk, cnt = pcall(transposer.getSlotStackSize, transposer, side, slot)
+        local cntOk, cnt = pcall(transposer.getSlotStackSize, side, slot)
         if cntOk and type(cnt) == "number" then sz = cnt end
       end
       table.insert(contents, {
@@ -412,40 +393,15 @@ end
 -- Fluid transfer operations
 -- ===========================================================================
 
---- Transfer fluid between two adjacent tanks via transposer.
--- Wraps transposer.transferFluid() with pcall error handling.
--- @param fromSide   number — source side constant
--- @param toSide     number — destination side constant
--- @param count      number|nil — max mB to transfer (nil = all)
--- @param fromTank   number|nil — source tank index (nil = first)
--- @return number of mB transferred, or nil + error
-function HAL:performFluidTransfer(fromSide, toSide, count, fromTank)
-  self:clearError()
-
-  if not component.isAvailable("transposer") then
-    self._lastError = "HAL:performFluidTransfer() — transposer not available"
-    return nil, self._lastError
-  end
-
-  local transposer = component.transposer
-  local ok, transferred = pcall(transposer.transferFluid, transposer, fromSide, toSide, count, fromTank)
-
-  if not ok then
-    self._lastError = "HAL:performFluidTransfer() — transposer error: " .. tostring(transferred)
-    return nil, self._lastError
-  end
-
-  os.sleep(0)
-  return transferred or 0
-end
-
 --- Get a snapshot of all fluids in tanks on a given side.
+-- @param transposerAddress string — transposer component address
 -- @param side  number — side constant
 -- @return table array of {tank, label, amount, capacity}, or nil + error
-function HAL:getTankContents(side)
+function HAL:getTankContents(transposerAddress, side)
   self:clearError()
 
-  if not component.isAvailable("transposer") then
+  local transposer = self:getProxy(transposerAddress)
+  if not transposer then
     self._lastError = "HAL:getTankContents() — transposer not available"
     return nil, self._lastError
   end
@@ -479,12 +435,160 @@ function HAL:getTankContents(side)
 end
 
 -- ===========================================================================
+-- ME Controller — central buffer (replaces inventory_controller + tank_controller)
+-- ===========================================================================
+
+--- Query the ME Controller/Interface (CommonNetworkAPI) for all items and fluids.
+-- Items with a fluidDrop sub-table are split into the fluids array and mapped
+-- to the fluid pipeline shape. All other items stay in items.
+-- Also calls getFluidsInNetwork() for pure fluids (when discretizer is absent).
+-- @param meControllerAddr  string  OC ME Controller/Interface address
+-- @return table  { items = {...}, fluids = {...} }
+-- @return nil, string  on error
+function HAL:getMEContents(meControllerAddr)
+  self:clearError()
+  local proxy = self:getProxy(meControllerAddr)
+  if not proxy then return nil, self._lastError end
+
+  local items = {}
+  local fluids = {}
+  local seenFluids = {}  -- dedupe by name when both APIs return same fluid
+
+  -- 1) getItemsInNetwork — items + discretized fluid drops
+  local ok, allItems = pcall(proxy.getItemsInNetwork)
+  if ok and type(allItems) == "table" then
+    for _, entry in ipairs(allItems) do
+      if type(entry) == "table" then
+        if entry.fluidDrop and type(entry.fluidDrop) == "table" then
+          -- Discretized fluid → map to fluid pipeline shape.
+          -- entry.name is the drop-item ID (e.g. "ae2fc:fluid_drop") needed
+          -- for database.set(); entry.fluidDrop.name/label is the actual fluid identity.
+          if not seenFluids[entry.fluidDrop.name or entry.fluidDrop.label] then
+            table.insert(fluids, {
+              name   = entry.name or entry.fluidDrop.name or "unknown",
+              label  = entry.fluidDrop.label or entry.fluidDrop.name or "unknown",
+              amount = entry.size or entry.fluidDrop.amount or 0,
+              hasTag = entry.hasTag or false,
+              tag    = entry.tag or nil,
+            })
+            seenFluids[entry.fluidDrop.name or entry.fluidDrop.label] = true
+          end
+        else
+          -- Regular item
+          table.insert(items, {
+            name   = entry.name or "unknown",
+            label  = entry.label or "unknown",
+            size   = entry.size or 0,
+            damage = entry.damage or 0,
+            nbt    = entry.tag or nil,
+          })
+        end
+      end
+    end
+  end
+
+  -- 2) getFluidsInNetwork — pure fluids (works even without discretizer)
+  local flOk, allFluids = pcall(proxy.getFluidsInNetwork)
+  if flOk and type(allFluids) == "table" then
+    for _, entry in ipairs(allFluids) do
+      if type(entry) == "table" and entry.label then
+        if not seenFluids[entry.name or entry.label] then
+          table.insert(fluids, {
+            name   = entry.name or entry.label or "unknown",
+            label  = entry.label or entry.name or "unknown",
+            amount = entry.amount or 0,
+            hasTag = entry.hasTag or false,
+            tag    = entry.tag or nil,
+          })
+          seenFluids[entry.name or entry.label] = true
+        end
+      end
+    end
+  end
+
+  return { items = items, fluids = fluids }
+end
+
+-- ===========================================================================
 -- Maintenance state checking (checkMaintenanceState)
 -- ===========================================================================
 
+--- Poll a machine's GT hardware via HAL's proxy cache and push state into
+-- the MachineNode. Owns all hardware I/O — MachineNode never touches components.
+-- @param machineNode  MachineNode instance
+-- @return table  { active, progress, maxProgress, hasWork, faulted, faultReason, name, eu, euCapacity }
+function HAL:pollMachineHardware(machineNode)
+  self:clearError()
+
+  local result = {
+    active      = false,
+    progress    = 0,
+    maxProgress = 0,
+    hasWork     = false,
+    faulted     = false,
+    faultReason = nil,
+    name        = machineNode.machineType or "unknown",
+    eu          = nil,
+    euCapacity  = nil,
+  }
+
+  local proxy = self:getProxy(machineNode.hardwareAddress)
+  if not proxy then
+    if machineNode:getStatus() == "PROCESSING" then
+      machineNode:recordFault(100, "Hardware proxy unresponsive for " .. (machineNode.hardwareAddress:sub(1,8)))
+    end
+    self:invalidateCache(machineNode.hardwareAddress)  -- force fresh component.proxy() next poll
+    result.faulted = true
+    result.faultReason = self._lastError or "proxy unavailable"
+    return result
+  end
+
+  -- Read hardware state — per-call pcall so one failure doesn't blank all fields
+  local active, progress, maxProgress, hasWork
+  pcall(function() active      = proxy.isMachineActive() end)
+  pcall(function() progress    = proxy.getWorkProgress() end)
+  pcall(function() maxProgress = proxy.getWorkMaxProgress() end)
+  pcall(function() hasWork     = proxy.hasWork() end)
+
+  -- If ALL calls failed, the proxy is dead
+  if active == nil and progress == nil and hasWork == nil then
+    if machineNode:getStatus() == "PROCESSING" then
+      machineNode:recordFault(100, "Hardware proxy unresponsive for " .. (machineNode.hardwareAddress:sub(1,8)))
+    end
+    self:invalidateCache(machineNode.hardwareAddress)  -- stale handle, force refresh next poll
+    result.faulted = true
+    result.faultReason = "all hardware calls returned nil"
+    return result
+  end
+
+  result.active      = active or false
+  result.progress    = progress or 0
+  result.maxProgress = maxProgress or 0
+  result.hasWork     = hasWork or false
+
+  -- Push progress into MachineNode
+  machineNode:updateHardwareState(result.progress)
+
+  -- Fault detection: only when PROCESSING
+  if machineNode:getStatus() == "PROCESSING" then
+    if active == false and hasWork then
+      machineNode:recordFault(200, "Machine went inactive with work remaining")
+      result.faulted = true
+      result.faultReason = "inactive with work remaining"
+    elseif active == false and progress and maxProgress
+           and progress > 0 and progress < maxProgress then
+      machineNode:recordFault(201, "Machine stalled mid-operation")
+      result.faulted = true
+      result.faultReason = "stalled mid-operation"
+    end
+  end
+
+  return result
+end
+
 --- Perform a comprehensive maintenance check on a machine.
--- Queries the machine via pollHardware (from MachineNode) or directly,
--- then maps the results to a structured health report.
+-- Polls hardware via pollMachineHardware, then maps results to a structured
+-- health report.
 --
 -- The check covers:
 --   - Power status (EU starvation)
@@ -501,7 +605,7 @@ end
 --   progressOk   — boolean
 --   ghostItems   — number of ghost items found (0 if clean)
 --   recommendations — string array of suggested actions
-function HAL:checkMaintenanceState(machineNode)
+function HAL:checkMaintenanceState(machineNode, transposerAddr, ifaceSide)
   self:clearError()
 
   local result = {
@@ -528,17 +632,8 @@ function HAL:checkMaintenanceState(machineNode)
   -- Get capabilities for this machine type
   local capabilities = self:getCapabilities(machineNode.machineType)
 
-  -- Phase 1: Poll hardware (protected with pcall for crash safety)
-  local hwOk, hardwareState = pcall(machineNode.pollHardware, machineNode)
-  if not hwOk or not hardwareState then
-    hardwareState = {
-      faulted = true,
-      faultReason = tostring(hardwareState or "pollHardware crashed"),
-      name = machineNode.machineType,
-      eu = 0, euCapacity = 0,
-      hasWork = false, active = false,
-    }
-  end
+  -- Phase 1: Poll hardware through HAL (not MachineNode)
+  local hardwareState = self:pollMachineHardware(machineNode)
   local hasPowerCap = self:hasCapability(machineNode.machineType, HAL.CAP_POWER_EU)
                     or self:hasCapability(machineNode.machineType, HAL.CAP_POWER_STEAM)
 
@@ -584,10 +679,9 @@ function HAL:checkMaintenanceState(machineNode)
   end
 
   -- Phase 3: Check for ghost items in the ME interface
-  if component.isAvailable("transposer") then
-    local transposer = component.transposer
-    local ifaceSide = self:resolveSide("interface")
-    if ifaceSide then
+  if transposerAddr and ifaceSide then
+    local transposer, tErr = self:getProxy(transposerAddr)
+    if transposer then
       local sizeOk, size = pcall(transposer.getInventorySize, transposer, ifaceSide)
       if sizeOk and size and size > 0 then
         local ghostCount = 0
@@ -780,26 +874,71 @@ end
 -- Database has max 9 slots -- caller must manage slot allocation.
 -- ===========================================================================
 
---- Store an item/fluid reference in the OC Database.
+
+--- [DEPRECATED] Store an item/fluid reference using the old OC Database API.
+-- Use HAL:storeNetworkEntry() instead — CommonNetworkAPI.store() handles
+-- zlib-BNBT → JSON NBT encoding correctly that manual db.set() does not.
+-- Kept for backward compat; all production callers should migrate.
 -- @param dbAddress  string   OC Database component address
 -- @param slot       number   1-indexed slot (1-9)
--- @param name       string   Unlocalized item/fluid name
+-- @param name       string   Unlocalized item/fluid name (id param to db.set)
+-- @param label      string   Localized item/fluid label (for logging, not passed to DB)
 -- @param damage     number   Item damage value (0 for fluids)
--- @param nbt        string|nil  JSON NBT data (nil if none)
+-- @param nbt        string|nil  NBT data in JSON format (nil if none)
 -- @return boolean
-function HAL:storeDatabaseEntry(dbAddress, slot, name, damage, nbt)
+function HAL:storeDatabaseEntry(dbAddress, slot, name, label, damage, nbt)
   self:clearError()
+
   local db = self:getProxy(dbAddress)
-  if not db then return false, self._lastError end
-  local ok, err = pcall(db.set, slot, name, damage, nbt)
+  if not db then
+    return false, self._lastError
+  end
+
+  local ok, result = pcall(db.set, slot, name, damage, nbt)
   if not ok then
-    self._lastError = "HAL:storeDatabaseEntry() — db.set[" .. slot .. "] failed: " .. tostring(err)
+    self._lastError = "storeDatabaseEntry: db.set failed at slot " .. slot
+      .. " — " .. tostring(result)
+    return false, self._lastError
+  end
+
+  if result == false then
+    self._lastError = "storeDatabaseEntry: db.set reported failure at slot " .. slot
+    return false, self._lastError
+  end
+
+  return true
+end
+
+--- Store a single matching network entry into the database using the native
+-- CommonNetworkAPI.store() method. Handles NBT encoding correctly (zlib BNBT
+-- → JSON) which manual db.set() does not. Used for both items and fluid drops.
+-- Items: filter = { name = "mod:item", damage = 0 }
+-- Fluids: filter = { label = "drop of <fluid>" }
+-- @param meAddr     string   ME Controller/Interface address
+-- @param filter     table    Filter matching the item/fluid to store
+-- @param dbAddress  string   OC Database address
+-- @param slot       number   1-indexed slot
+-- @return boolean
+function HAL:storeNetworkEntry(meAddr, filter, dbAddress, slot)
+  self:clearError()
+  local proxy = self:getProxy(meAddr)
+  if not proxy then return false, self._lastError end
+
+  local ok, result = pcall(proxy.store, filter, dbAddress, slot, 1)
+  if not ok then
+    self._lastError = "storeNetworkEntry: store() failed: " .. tostring(result)
+    return false, self._lastError
+  end
+  if result == false then
+    self._lastError = "storeNetworkEntry: store() reported failure at slot " .. slot
     return false, self._lastError
   end
   return true
 end
 
 --- Clear a single Database slot.
+-- Uses db.clear() — CommonNetworkAPI has no clear method, so this stays
+-- on the old OC Database API by necessity.
 -- @param dbAddress  string
 -- @param slot       number   1-indexed
 -- @return boolean
@@ -864,9 +1003,14 @@ function HAL:configureFluidExport(ifaceAddress, side, dbAddress, dbSlot)
   self:clearError()
   local iface = self:getProxy(ifaceAddress)
   if not iface then return false, self._lastError end
-  local ok, err = pcall(iface.setFluidInterfaceConfiguration, side, dbAddress, dbSlot)
+  local ok, result = pcall(iface.setFluidInterfaceConfiguration, side, dbAddress, dbSlot)
+  
   if not ok then
-    self._lastError = "HAL:configureFluidExport() — failed: " .. tostring(err)
+    self._lastError = "HAL:configureFluidExport() — pcall failed: " .. tostring(result)
+    return false, self._lastError
+  end
+  if result == false then
+    self._lastError = "HAL:configureFluidExport() — iface.setFluidInterfaceConfiguration reported failure at side " .. side
     return false, self._lastError
   end
   return true
@@ -915,6 +1059,155 @@ function HAL:checkSlotCount(side, slot)
   local cntOk, cnt = pcall(xp.getSlotStackSize, side, slot)
   if cntOk and type(cnt) == "number" then return cnt end
   return 0
+end
+
+
+--- Check if an ME Interface has items stocked in its configuration slots.
+-- Uses getInterfaceConfiguration rather than transposer slot inspection.
+-- @param ifaceAddress  string   ME Interface component address
+-- @param slotCount     number   How many config slots to check (1-9)
+-- @return boolean stocked, or nil + error
+function HAL:checkInterfaceStocked(ifaceAddress, slotCount)
+  self:clearError()
+  local iface = self:getProxy(ifaceAddress)
+  if not iface then
+    self._lastError = "HAL:checkInterfaceStocked() — getProxy failed: " .. tostring(ifaceAddress)
+    return nil, self._lastError
+  end
+
+  for i = 1, slotCount do
+    local ok, cfg = pcall(iface.getInterfaceConfiguration, i)
+    if not ok then
+      self._lastError = "HAL:checkInterfaceStocked() — getInterfaceConfiguration failed: " .. tostring(cfg)
+    elseif cfg then
+      return true
+    end
+  end
+
+  return false
+end
+
+--- Maps all valid inventories adjacent to the transposer.
+-- @param transposerAddress string — transposer component address
+-- @return table mapping side constants to {name, slots}
+function HAL:mapSides(transposerAddress)
+  self:clearError()
+  local transposer = self:getProxy(transposerAddress)
+  if not transposer then
+    self._lastError = "HAL:mapSides() — transposer not available"
+    return {}
+  end
+
+  local sides = require("sides")
+  local result = {}
+
+  local validSides = {sides.north, sides.south, sides.east, sides.west, sides.up, sides.down}
+  
+  for _, side in ipairs(validSides) do
+    local okSize, size = pcall(transposer.getInventorySize, side)
+    
+    if okSize and size and size > 0 then
+      local okName, name = pcall(transposer.getInventoryName, side)
+      result[side] = {
+        name = (okName and name) or "unknown",
+        slots = size,
+      }
+    end
+    os.sleep(0)
+  end
+  
+  return result
+end
+
+--- Transfer exactly ONE item by its label (Fast Iterator Method)
+-- @param fromSide  number — source side constant
+-- @param transposerAddress string — transposer component address
+-- @param toSide    number — destination side constant
+-- @param label     string — exact label to match
+-- @return number of items moved (1 for success, 0 for out of stock)
+function HAL:transferOneByLabel(transposerAddress, fromSide, toSide, label)
+  self:clearError()
+  local transposer = self:getProxy(transposerAddress)
+  if not transposer then
+    self._lastError = "HAL:transferOneByLabel() — transposer not available"
+    return 0
+  end
+  local ok, iterator = pcall(transposer.getAllStacks, fromSide)
+  if not ok or type(iterator) ~= "function" then return 0 end
+
+  local currentSlot = 1 
+  for stack in iterator do
+    if type(stack) == "table" and stack.size and stack.size > 0 and stack.label == label then
+      local okMove, moved = pcall(transposer.transferItem, fromSide, toSide, 1, currentSlot, currentSlot)
+      return (okMove and moved) or 0
+    end
+    currentSlot = currentSlot + 1
+    os.sleep(0)
+  end
+  
+  return 0 
+end
+
+--- Transfer a specific amount with built-in retry delays for slow AE2 restocks
+-- @param fromSide  number
+-- @param transposerAddress string — transposer component address
+-- @param toSide    number
+-- @param amount    number — total target amount to move
+-- @param fromSlot  number
+-- @param toSlot    number (optional)
+-- @param maxTries  number (optional, defaults to 10)
+-- @return number of items actually moved
+function HAL:transferWithRetry(transposerAddress, fromSide, toSide, amount, fromSlot, toSlot, maxTries)
+  self:clearError()
+
+  local transposer = self:getProxy(transposerAddress)
+  if not transposer then
+    self._lastError = "HAL:transferWithRetry() — transposer not available"
+    return 0
+  end
+  maxTries = maxTries or 10
+  toSlot = toSlot or fromSlot
+  local remaining = amount
+  
+  for attempt = 1, maxTries do
+    local okMove, moved = pcall(transposer.transferItem, fromSide, toSide, remaining, fromSlot, toSlot)
+    
+    if okMove and moved then
+      remaining = remaining - moved
+    end
+    
+    if remaining <= 0 then 
+      return amount 
+    end
+    
+    if not moved or moved == 0 then
+      -- Source is empty or starving, sleep to allow AE2/network to push more items
+      os.sleep(0.5)
+    end
+  end
+  
+  return amount - remaining
+end
+
+--- Return leftover items from machine output back to the interface/network
+-- @param returnSide number — side facing machine output
+-- @param pullSide   number — side facing ME Interface / Dual Interface
+-- @param transposerAddress string — transposer component address
+-- @param slotsArray table  — array of slot numbers to clear
+function HAL:returnLeftovers(transposerAddress, returnSide, pullSide, slotsArray)
+  self:clearError()
+  local transposer = self:getProxy(transposerAddress)
+  if not transposer then
+    self._lastError = "HAL:returnLeftovers() — transposer not available"
+    return false
+  end
+  
+  for _, slot in ipairs(slotsArray) do
+    pcall(transposer.transferItem, returnSide, pullSide, 64, slot, slot)
+    os.sleep(0)
+  end
+  
+  return true
 end
 
 return HAL

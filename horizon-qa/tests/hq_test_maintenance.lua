@@ -3,7 +3,7 @@ hq_test_maintenance.lua — Horizon-QA Tier 2 Test: GT Machine Maintenance Fault
 AE2 Execution System (AE2-ES), Deliverable C9
 
 Simulates genuine GT maintenance fault on a machine and verifies:
-  1. Exec Broker detects STATUS_FAULTED via MachineNode.pollHardware()
+  1. Exec Broker detects STATUS_FAULTED via HAL:pollMachineHardware()
   2. MaintenanceReport generated with correct fault code
   3. Cleanup routine extracts partial inputs
   4. Heartbeat polling detects repair and restores AVAILABLE
@@ -94,25 +94,31 @@ local ExecBroker = require("src.exec_broker")
 local MaintenanceReport = MockModules.MaintenanceReport
 
 -- ===========================================================================
--- Helper: Build a machine node with controllable proxy and fault state
+-- Shared HAL mock for hardware polling
+-- ===========================================================================
+local hal = MockModules.HAL.new()
+
+-- ===========================================================================
+-- Helper: Build a machine node with controllable proxy and fault state.
+-- Registers a mock GT machine proxy on HAL so pollMachineHardware works.
 -- ===========================================================================
 local function buildMachine(address, opts)
   opts = opts or {}
   local machine = MockModules.MachineNode.new(address, opts)
-  -- Proxy: simulates a GT machine adapter
-  machine._proxy = {
-    isMachineActive = opts.active or function() return opts.status == "PROCESSING" end,
-    isWorkAllowed = opts.workAllowed or function() return true end,
-    setWorkAllowed = function(allowed) end,
-    hasWork = opts.hasWork or function() return opts.status == "PROCESSING" end,
-    getWorkProgress = opts.progress or function() return (opts.status == "PROCESSING") and 45 or 0 end,
+  -- Register a mock GT proxy on HAL (not on machine)
+  hal:setMockProxy(address, {
+    isMachineActive  = opts.active or function() return opts.status == "PROCESSING" end,
+    isWorkAllowed    = opts.workAllowed or function() return true end,
+    setWorkAllowed   = function(allowed) end,
+    hasWork          = opts.hasWork or function() return opts.status == "PROCESSING" end,
+    getWorkProgress  = opts.progress or function() return (opts.status == "PROCESSING") and 45 or 0 end,
     getWorkMaxProgress = function() return 100 end,
-    getName = opts.machineName or function() return "Large Chemical Reactor" end,
-    getOwnerName = function() return "Player" end,
+    getName          = opts.machineName or function() return "Large Chemical Reactor" end,
+    getOwnerName     = function() return "Player" end,
     getSensorInformation = function() return {} end,
-    getStoredEU = function() return 10000 end,
-    getEUCapacity = function() return 200000 end,
-  }
+    getStoredEU      = function() return 10000 end,
+    getEUCapacity    = function() return 200000 end,
+  })
   return machine
 end
 
@@ -120,7 +126,7 @@ end
 -- TEST GROUP 1: Fault Detection via pollHardware()
 -- ===========================================================================
 
-Assert.startTest("M1: Exec Broker detects STATUS_FAULTED via MachineNode.pollHardware()")
+Assert.startTest("M1: Exec Broker detects STATUS_FAULTED via HAL:pollMachineHardware()")
 
 do
   -- Create a machine that will fault
@@ -132,7 +138,7 @@ do
   })
 
   -- Verify initial state is healthy
-  local pollResult = m1:pollHardware()
+  local pollResult = hal:pollMachineHardware(m1)
   Assert.isTrue(pollResult.active, "machine is active (PROCESSING)")
   Assert.isFalse(pollResult.faulted, "machine is not faulted initially")
   Assert.isFalse(m1:hasFault(), "hasFault() returns false")
@@ -144,7 +150,7 @@ do
   m1._status = "FAULTED"
 
   -- Poll after fault injection
-  pollResult = m1:pollHardware()
+  pollResult = hal:pollMachineHardware(m1)
   Assert.isTrue(pollResult.faulted, "machine is now faulted after injection")
   Assert.isTrue(m1:hasFault(), "hasFault() returns true")
 
@@ -285,7 +291,7 @@ do
   m1._locked = false
 
   -- Phase 3: Heartbeat poll confirms repair
-  local pollResult = m1:pollHardware()
+  local pollResult = hal:pollMachineHardware(m1)
   Assert.isFalse(pollResult.faulted, "heartbeat detects fault is cleared")
   Assert.isFalse(m1:hasFault(), "hasFault() returns false after repair")
 

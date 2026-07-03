@@ -1,11 +1,8 @@
 -- MachineNode.lua
 -- AE2-ES Module A2: MachineNode
--- Software abstraction of a physical GT machine coupled with an AE2 ME Interface.
--- Provides status tracking, hardware polling, exclusive locking, and ghost-item cleanup.
---
--- Expected coupled components (loose coupling — only hardwareAddress is required):
---   - GT machine component (via adapter or MFU) for status/progress queries
---   - ME Interface component for pattern configuration and ghost-item flushing
+-- Pure software abstraction of a physical GT machine.
+-- Provides status tracking, exclusive locking, fault management.
+-- Hardware I/O is owned by HAL (hal.lua) — MachineNode only stores state.
 --
 -- Status lifecycle:
 --   AVAILABLE  → LOCKED      (lock for exclusive dispatch)
@@ -15,7 +12,6 @@
 --   FAULTED    → AVAILABLE   (maintenance resolved)
 --
 -- Dependencies: none (standard Lua libraries only)
--- OC constraints: pollHardware may call component proxied methods; callers must yield
 
 local MachineNode = {}
 MachineNode.__index = MachineNode
@@ -33,48 +29,44 @@ local DEFAULT_POLL_INTERVAL = 5
 
 --- Create a new MachineNode instance.
 -- Supports two calling conventions:
---   1. Legacy (3 positional args): (hardwareAddress, interfaceAddress, machineType)
+--   1. Legacy (1 positional arg): (hardwareAddress)
 --   2. New (2 args with options table): (hardwareAddress, optionsTable)
---      optionsTable fields: hardwareAddress, interfaceAddress, machineType, laneId, proxy
--- @param hardwareAddress  string  Component address of the GT machine
--- @param arg2             string|table  interfaceAddress (legacy) or options table (new)
--- @param arg3             string  machineType (legacy only)
+--      optionsTable fields: hardwareAddress, machineType, laneId
+-- @param hardwareAddress  string  Component address of the GT machine (via adapter)
+-- @param arg2             string|table  machineType (legacy) or options table (new)
 -- @return MachineNode instance
-function MachineNode.new(hardwareAddress, arg2, arg3)
+function MachineNode.new(hardwareAddress, arg2)
   assert(type(hardwareAddress) == "string" and #hardwareAddress > 0,
          "hardwareAddress is required")
 
-  local interfaceAddress, machineType, laneId, proxy
+  local machineType, laneId
 
   if type(arg2) == "table" then
     -- New convention: options table
-    interfaceAddress = arg2.interfaceAddress or ""
-    machineType      = arg2.machineType or "gt_machine"
-    laneId           = arg2.laneId
-    proxy            = arg2.proxy
+    machineType = arg2.machineType or "gt_machine"
+    laneId      = arg2.laneId
+  elseif type(arg2) == "string" then
+    -- Legacy convention: positional machineType
+    machineType = arg2
   else
-    -- Legacy convention: positional args
-    interfaceAddress = arg2 or ""
-    machineType      = arg3 or "gt_machine"
+    machineType = "gt_machine"
   end
 
   return setmetatable({
-    hardwareAddress    = hardwareAddress,
-    interfaceAddress   = interfaceAddress,
-    machineType        = machineType,
-    laneId             = laneId,
-    _proxy             = proxy,
-    status             = MachineNode.STATUS.AVAILABLE,
-    activeJob          = nil,    -- JobManifest reference when PROCESSING
-    maintenanceFlags   = {
-      hasFault        = false,
-      code            = 0,
-      description     = "",
-      timestamp       = 0,
+    hardwareAddress  = hardwareAddress,
+    machineType      = machineType,
+    laneId           = laneId,
+    status           = MachineNode.STATUS.AVAILABLE,
+    activeJob        = nil,    -- JobManifest reference when PROCESSING
+    maintenanceFlags = {
+      hasFault    = false,
+      code        = 0,
+      description = "",
+      timestamp   = 0,
     },
-    _pollInterval      = DEFAULT_POLL_INTERVAL,
-    _cachedProgress    = 0,
-    _lastPollTime      = 0,
+    _pollInterval    = DEFAULT_POLL_INTERVAL,
+    _cachedProgress  = 0,
+    _lastPollTime    = 0,
   }, MachineNode)
 end
 
@@ -222,131 +214,15 @@ function MachineNode:clearFault()
 end
 
 ------------------------------------------------------------------------
--- Hardware polling
+-- Hardware state (updated by HAL)
 ------------------------------------------------------------------------
 
---- Poll the physical machine hardware for current status.
--- Uses component.proxy(hardwareAddress) to query the GT machine.
--- Updates cachedProgress and detects faults.
--- NOTE: In a real OC environment this calls OC component APIs.
---       In test/emulated environments, provide a mock proxy via setProxy().
---
--- Returns the current (possibly updated) status string.
--- @return string  status after poll
-function MachineNode:pollHardware()
-  -- Attempt to query hardware via proxy
-  local machine = self:_getProxy()
-  if not machine then
-    -- No proxy available (test environment or offline) — return current status
-    return self.status
-  end
-
-  -- Check if the machine component is responsive
-  local ok, err = pcall(function()
-    return machine.isMachineActive and machine.getWorkProgress
-  end)
-  if not ok then
-    self:recordFault(100, "Hardware proxy unresponsive: " .. tostring(err))
-    return self.status
-  end
-
-  -- Read hardware state
-  local active, progress, hasWork, workAllowed
-
-  pcall(function()
-    active      = machine.isMachineActive and machine.isMachineActive()
-    progress    = machine.getWorkProgress and machine.getWorkProgress()
-    hasWork     = machine.hasWork and machine.hasWork()
-    workAllowed = machine.isWorkAllowed and machine.isWorkAllowed()
-  end)
-
-  -- Store cached progress regardless
+--- Update cached hardware state after a HAL poll.
+-- Called by HAL:pollMachineHardware() — MachineNode does NOT reach out to hardware.
+-- @param progress  number  Current work progress from GT machine
+function MachineNode:updateHardwareState(progress)
   self._cachedProgress = progress or 0
   self._lastPollTime   = os.time()
-
-  -- Fault detection: machine was PROCESSING but now inactive with unfinished work
-  if self.status == MachineNode.STATUS.PROCESSING then
-    if active == false and hasWork then
-      self:recordFault(200, "Machine went inactive with work remaining")
-    elseif active == false and progress and progress > 0 then
-      self:recordFault(201, "Machine stalled mid-operation")
-    end
-  end
-
-  return self.status
-end
-
---- Set a custom proxy function for testing.
--- @param proxyFn  function or table  Callable proxy for hardware interaction
-function MachineNode:setProxy(proxyFn)
-  self._proxy = proxyFn
-end
-
---- Get the hardware proxy (real or mock).
--- @return table or nil
-function MachineNode:_getProxy()
-  if self._proxy then
-    return self._proxy
-  end
-  -- In a real OC environment, resolve via component.proxy
-  local ok, proxy = pcall(require, "component")
-  if ok and proxy and proxy.proxy then
-    return proxy.proxy(self.hardwareAddress)
-  end
-  return nil
-end
-
-------------------------------------------------------------------------
--- Interface flush (ghost-item cleanup)
-------------------------------------------------------------------------
-
---- Flush the ME Interface: clear all configured stocking slots.
--- This handles the ghost-items edge case where unconsumed inputs
--- remain in the interface after a job completes.
--- Uses the interfaceAddress if available.
--- @return boolean  true if flush was attempted (not necessarily successful)
-function MachineNode:flushInterface()
-  if not self.interfaceAddress or self.interfaceAddress == "" then
-    -- No interface configured; nothing to flush
-    return false
-  end
-
-  local iface = self:_getInterfaceProxy()
-  if not iface then
-    return false
-  end
-
-  -- Clear all 9 interface configuration slots (standard ME Interface)
-  local cleared = 0
-  for slot = 1, 9 do
-    local ok = pcall(function()
-      iface.setInterfaceConfiguration(slot)
-    end)
-    if ok then
-      cleared = cleared + 1
-    end
-  end
-
-  return cleared > 0
-end
-
---- Get the ME Interface proxy (real or mock).
--- @return table or nil
-function MachineNode:_getInterfaceProxy()
-  if self._ifaceProxy then
-    return self._ifaceProxy
-  end
-  local ok, proxy = pcall(require, "component")
-  if ok and proxy and proxy.proxy then
-    return proxy.proxy(self.interfaceAddress)
-  end
-  return nil
-end
-
---- Set a custom interface proxy for testing.
--- @param proxyFn  function or table  Mock interface proxy
-function MachineNode:setInterfaceProxy(proxyFn)
-  self._ifaceProxy = proxyFn
 end
 
 ------------------------------------------------------------------------
@@ -359,7 +235,6 @@ end
 function MachineNode:toTelemetry()
   return {
     hardwareAddress  = self.hardwareAddress,
-    interfaceAddress = self.interfaceAddress,
     machineType      = self.machineType,
     status           = self.status,
     hasFault         = self.maintenanceFlags.hasFault,

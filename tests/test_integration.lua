@@ -232,7 +232,7 @@ do
 
   -- Create a fresh HAL for inspection
   local hal = MockModules.HAL.new({
-    sideMap = { centralBuffer = 3, itemBuffer = 3, interface = 4, inputHatch = 1, outputHatch = 0 }
+    sideMap = { interface = 4, inputHatch = 1, outputHatch = 0 }
   })
 
   -- Override in package.loaded for this test
@@ -279,7 +279,7 @@ do
       JobManifest = require("src.jobmanifest"),
       TelemetryPayload = require("src.telemetrypayload"),
     },
-    halConfig = { sideMap = { centralBuffer = 3, itemBuffer = 3, interface = 4 } },
+    halConfig = { sideMap = { interface = 4 } },
     bufferFeeder = bufferFeeder,
     pollInterval = 0.01,
     snapshot = snap,
@@ -324,7 +324,7 @@ do
   local machines = { ["fluid-001"] = fluidMachine }
 
   local hal = MockModules.HAL.new({
-    sideMap = { centralBuffer = 3, itemBuffer = 3, interface = 4, inputHatch = 1, outputHatch = 0, fluidExport = 5 },
+    sideMap = { interface = 4, inputHatch = 1, outputHatch = 0, fluidExport = 5 },
     capabilities = {
       fluid = { "item_input", "item_output", "fluid_input", "fluid_output" },
     },
@@ -358,7 +358,7 @@ do
       JobManifest = require("src.jobmanifest"),
       TelemetryPayload = require("src.telemetrypayload"),
     },
-    halConfig = { sideMap = { centralBuffer = 3, interface = 4, inputHatch = 1, outputHatch = 0 } },
+    halConfig = { sideMap = { interface = 4, inputHatch = 1, outputHatch = 0 } },
     bufferFeeder = function() return bufferData end,
     pollInterval = 0.01,
     snapshot = snap,
@@ -385,10 +385,9 @@ Assert.endTest()
 Assert.startTest("G2c: HAL side resolution returns correct sides")
 do
   local hal = MockModules.HAL.new({
-    sideMap = { centralBuffer = 3, interface = 4, inputHatch = 1, outputHatch = 0, redstone = 2 }
+    sideMap = { interface = 4, inputHatch = 1, outputHatch = 0, redstone = 2 }
   })
 
-  Assert.equal(3, hal:resolveSide("centralBuffer"), "centralBuffer → side 3")
   Assert.equal(4, hal:resolveSide("interface"), "interface → side 4")
   Assert.equal(1, hal:resolveSide("inputHatch"), "inputHatch → side 1")
   Assert.equal(0, hal:resolveSide("outputHatch"), "outputHatch → side 0")
@@ -471,7 +470,7 @@ do
   }
 
   local hal = MockModules.HAL.new({
-    sideMap = { centralBuffer = 3, interface = 4, redstone = 2 }
+    sideMap = { interface = 4, redstone = 2 }
   })
   local rs = hal:resolveSide("redstone")
 
@@ -503,7 +502,7 @@ do
       JobManifest = require("src.jobmanifest"),
       TelemetryPayload = require("src.telemetrypayload"),
     },
-    halConfig = { sideMap = { centralBuffer = 3, interface = 4, redstone = 2 } },
+    halConfig = { sideMap = { interface = 4, redstone = 2 } },
     bufferFeeder = function() return bufferData end,
     pollInterval = 0.01,
     snapshot = snap,
@@ -540,7 +539,7 @@ do
   local machines = { ["mach-fault"] = faultMachine }
 
   local hal = MockModules.HAL.new({
-    sideMap = { centralBuffer = 3, itemBuffer = 3, interface = 4, inputHatch = 1, outputHatch = 0 }
+    sideMap = { interface = 4, inputHatch = 1, outputHatch = 0 }
   })
 
   local bufferData = {
@@ -579,7 +578,7 @@ do
       JobManifest = require("src.jobmanifest"),
       TelemetryPayload = require("src.telemetrypayload"),
     },
-    halConfig = { sideMap = { centralBuffer = 3, itemBuffer = 3, interface = 4 } },
+    halConfig = { sideMap = { interface = 4 } },
     bufferFeeder = bufferFeeder,
     pollInterval = 0.01,
     snapshot = snap,
@@ -639,7 +638,7 @@ do
   local machines = { ["mach-f2"] = faultMachine }
 
   local hal = MockModules.HAL.new({
-    sideMap = { centralBuffer = 3, interface = 4 }
+    sideMap = { interface = 4 }
   })
 
   local bufferData = {
@@ -668,7 +667,7 @@ do
       JobManifest = require("src.jobmanifest"),
       TelemetryPayload = require("src.telemetrypayload"),
     },
-    halConfig = { sideMap = { centralBuffer = 3, itemBuffer = 3, interface = 4 } },
+    halConfig = { sideMap = { interface = 4 } },
     bufferFeeder = function() return bufferData end,
     pollInterval = 0.01,
     snapshot = snap,
@@ -713,7 +712,7 @@ do
   local machines = { ["multi-1"] = m1, ["multi-2"] = m2 }
 
   local hal = MockModules.HAL.new({
-    sideMap = { centralBuffer = 3, interface = 4 }
+    sideMap = { interface = 4 }
   })
 
   local bufferData = {
@@ -750,7 +749,7 @@ do
       JobManifest = require("src.jobmanifest"),
       TelemetryPayload = require("src.telemetrypayload"),
     },
-    halConfig = { sideMap = { centralBuffer = 3, itemBuffer = 3, interface = 4 } },
+    halConfig = { sideMap = { interface = 4 } },
     bufferFeeder = function() return bufferData end,
     pollInterval = 0.01,
     snapshot = snap,

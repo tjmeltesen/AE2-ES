@@ -22,17 +22,19 @@ function MockModules.MachineNode.new(address, opts)
   self._locked = false
   self._activeJob = nil
   self._machineType = opts.machineType or "basic"
-  -- _proxy: if nil, exec_broker assumes machine is always active.
-  -- Set to {} for default (active=true), or {isMachineActive=fn} for control.
-  self._proxy = opts.proxy
   self.maintenanceFlags = opts.maintenanceFlags or {}
   self._callLog = {}
   self.id = opts.id or ("job_" .. address)
+  self._cachedProgress = 0
+  self._lastPollTime = 0
+  -- hardwareAddress for HAL:getProxy() compatibility
+  self.hardwareAddress = address
+  self.machineType = opts.machineType or "gt_machine"
   return self
 end
 
-function MockModules.MachineNode:_getProxy()
-  return self._proxy
+function MockModules.MachineNode:getStatus()
+  return self._status
 end
 
 function MockModules.MachineNode:isAvailable()
@@ -79,13 +81,18 @@ function MockModules.MachineNode:clearFault()
   table.insert(self._callLog, "clearFault")
 end
 
-function MockModules.MachineNode:pollHardware()
-  table.insert(self._callLog, "pollHardware")
-  return { active = self._status == "PROCESSING", faulted = self._faulted }
+function MockModules.MachineNode:updateHardwareState(progress)
+  self._cachedProgress = progress or 0
+  self._lastPollTime = os.time()
 end
 
-function MockModules.MachineNode:flushInterface()
-  table.insert(self._callLog, "flushInterface")
+function MockModules.MachineNode:recordFault(code, description)
+  self._faulted = true
+  self._faultCode = code or 0
+  self._faultDesc = description or "Unknown fault"
+  self._status = "FAULTED"
+  self.maintenanceFlags = { hasFault = true, code = code or 0, description = description or "Unknown fault", timestamp = os.time() }
+  table.insert(self._callLog, "recordFault:" .. (code or 0))
 end
 
 function MockModules.MachineNode:getMachineType()
@@ -171,7 +178,6 @@ function MockModules.HAL.new(config)
   local self = setmetatable({}, MockModules.HAL)
   self._config = config or {}
   self._sideMap = config and config.sideMap or {
-    centralBuffer = 3,  -- sides.front
     interface    = 4,   -- sides.right
     inputHatch   = 1,   -- sides.top
     outputHatch  = 0,   -- sides.bottom
@@ -186,7 +192,42 @@ function MockModules.HAL.new(config)
   self._fluidLog = {}
   self._redstoneCalls = {}
   self._maintenanceChecks = {}
+  self._mockProxies = {}     -- address -> proxy table for getProxy()
+  self._pollResults = {}     -- address -> pollMachineHardware return override
   return self
+end
+
+--- Inject a mock proxy that getProxy() will return for the given address.
+function MockModules.HAL:setMockProxy(address, proxy)
+  self._mockProxies[address] = proxy
+end
+
+--- Override the return value of pollMachineHardware for a given address.
+function MockModules.HAL:setMockPollResult(address, result)
+  self._pollResults[address] = result
+end
+
+function MockModules.HAL:getProxy(address)
+  if self._mockProxies[address] then
+    return self._mockProxies[address]
+  end
+  return nil, "HAL mock: no proxy registered for " .. tostring(address)
+end
+
+function MockModules.HAL:pollMachineHardware(machineNode)
+  table.insert(self._maintenanceChecks, { address = machineNode._address or machineNode.hardwareAddress, action = "pollHardware", timestamp = os.time() })
+  -- Return override if set
+  local addr = machineNode.hardwareAddress or machineNode._address
+  if self._pollResults[addr] then
+    return self._pollResults[addr]
+  end
+  -- Default: derive from MachineNode state
+  local active = machineNode._status == "PROCESSING"
+  local faulted = machineNode._faulted
+  if machineNode.updateHardwareState then
+    machineNode:updateHardwareState(active and 45 or 0)
+  end
+  return { active = active, progress = active and 45 or 0, maxProgress = 100, hasWork = active, faulted = faulted, faultReason = faulted and "mock fault" or nil, name = machineNode.machineType or "gt_machine", eu = nil, euCapacity = nil }
 end
 
 function MockModules.HAL:resolveSide(name)
@@ -206,9 +247,24 @@ function MockModules.HAL:performFluidTransfer(fromSide, toSide)
   return true, 1000 -- pretend we moved 1000 mB
 end
 
+--- Mock getMEContents — returns items and fluids for the ME Controller feeder.
+-- By default returns empty. Test fixtures can override via _mockMEData.
+function MockModules.HAL:getMEContents(meControllerAddr)
+  if self._mockMEData then
+    return self._mockMEData
+  end
+  return { items = {}, fluids = {} }
+end
+
 function MockModules.HAL:storeDatabaseEntry(dbAddress, slot, name, damage, nbt)
   self._dbEntries = self._dbEntries or {}
   table.insert(self._dbEntries, { dbAddress = dbAddress, slot = slot, name = name, damage = damage, nbt = nbt })
+  return true
+end
+
+function MockModules.HAL:storeNetworkEntry(meAddr, filter, dbAddress, slot)
+  self._networkStores = self._networkStores or {}
+  table.insert(self._networkStores, { meAddr = meAddr, filter = filter, dbAddress = dbAddress, slot = slot })
   return true
 end
 
@@ -263,7 +319,7 @@ function MockModules.HAL:hasCapability(machineType, capability)
   return false
 end
 
-function MockModules.HAL:checkMaintenanceState(machine)
+function MockModules.HAL:checkMaintenanceState(machine, transposerAddr, ifaceSide)
   table.insert(self._maintenanceChecks, { address = machine._address, timestamp = os.time() })
   if machine._faulted then
     return {

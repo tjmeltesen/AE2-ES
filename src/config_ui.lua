@@ -59,7 +59,7 @@ local SIDES = { "bottom", "top", "back", "front", "left", "right" }
 -- HAL side role labels
 local HAL_ROLES = {
   "inputBus", "inputHatch",
-  "interface", "itemBuffer", "fluidBuffer",
+  "interface",
   "transposerInput", "transposerOutput", "transposerReturn",
 }
 
@@ -68,11 +68,10 @@ local DEFAULT_SIDE_MAP = {
   inputBus    = 0,  -- bottom (items enter machine here)
   inputHatch  = 4,  -- west/left (fluid enters machine here)
   interface   = 1,  -- top
-  itemBuffer  = 0,  -- bottom (drawers for items)
-  fluidBuffer = 1,  -- top (hatches for fluids)
   transposerInput  = 2,  -- north/back (transposer pulls from drawer here)
   transposerOutput = 3,  -- south/front (transposer drops into machine input bus)
   transposerReturn = 5,  -- east/right (transposer pulls machine output → return chest)
+  fluidExport     = 2,  -- north/back (interface side for fluid conduit)
 }
 
 -- Default configuration template
@@ -83,9 +82,7 @@ local DEFAULT_CONFIG = {
   machines          = {},
   machineTypes      = {},
   redstoneAddress   = "",
-  centralBufferAddr = "",  -- deprecated, kept for migration
-  itemBufferAddr = "",     -- drawers/storage for items
-  fluidBufferAddr = "",    -- hatches/tanks for fluids
+  meControllerAddr = "",  -- ME Controller (central buffer; replaces item/fluid adapters)
   databaseAddr    = "",    -- OC database (stores item stack data for transfer)
   -- Per-lane transposer config (set during machine config)
   -- { [laneName] = { dualInterface, transposerAddr, machineAddr, pull, push, return } }
@@ -94,6 +91,7 @@ local DEFAULT_CONFIG = {
   heartbeatInterval = 2.0,
   debounceWindow    = 1.5,
   queueSize         = 64,
+  dbSlots           = 9,     -- OC Database slot count (1-9 standard, up to 16 with upgrades)
   halSideMap        = {},
 }
 
@@ -468,8 +466,6 @@ function ConfigUI:detectComponents()
     meController = nil,
     meInterfaces = {},
     gtMachines = {},
-    inventoryControllers = {},
-    tankControllers = {},
     misc = {},
   }
 
@@ -501,12 +497,6 @@ function ConfigUI:detectComponents()
       result.meController = entry
     elseif name == "me_interface" then
       table.insert(result.meInterfaces, entry)
-    elseif name == "inventory_controller" then
-      entry.controllerFace = self:_detectControllerFace(address, "inventory")
-      table.insert(result.inventoryControllers, entry)
-    elseif name == "tank_controller" or name == "fluid_controller" then
-      entry.controllerFace = self:_detectControllerFace(address, "tank")
-      table.insert(result.tankControllers, entry)
     elseif name:find("gt_machine") or name:find("^gt_") then
       table.insert(result.gtMachines, entry)
     else
@@ -535,37 +525,6 @@ function ConfigUI:findComponent(typeName)
       return entry
     end
   end
-  return nil
-end
-
---- Detect which face of a storage controller connects to inventories/tanks.
--- Uses pcall-protected proxy checks against getInventorySize (for inventory
--- controllers) or getTankCount (for tank/fluid controllers) on each side.
--- @param address  string  component address
--- @param ctrlType string  "inventory" or "tank"
--- @return number or nil  side constant (0-5), or nil if undetectable
-function ConfigUI:_detectControllerFace(address, ctrlType)
-  local component = self._component or safeRequire("component")
-  if not component then return nil end
-
-  local ok, proxy = pcall(component.proxy, address)
-  if not ok or not proxy then return nil end
-
-  local sides = {0, 1, 2, 3, 4, 5}  -- bottom, top, back, front, left, right
-  for _, side in ipairs(sides) do
-    if ctrlType == "inventory" then
-      local sizeOk, size = pcall(function() return proxy.getInventorySize(side) end)
-      if sizeOk and type(size) == "number" and size > 0 then
-        return side
-      end
-    elseif ctrlType == "tank" then
-      local countOk, count = pcall(function() return proxy.getTankCount(side) end)
-      if countOk and type(count) == "number" and count > 0 then
-        return side
-      end
-    end
-  end
-
   return nil
 end
 
@@ -608,7 +567,7 @@ function ConfigUI:testComponent(address, compType)
 
   -- Additional validation by type
   if compType == "modem" or proxyType == "modem" then
-    local openOk, _ = pcall(function() return proxy.open(math.random(60000, 65535))
+    local openOk, _ = pcall(function() return proxy.open(math.random(60000, 65535)) end)
     if not openOk then
       return false, "Modem proxy exists but open() failed. Check that the modem is installed and the computer has a network card."
     end
@@ -917,7 +876,6 @@ function ConfigUI:buildExecConfig()
           machines[addr] = MachineNode.new(addr, {
             machineType = machineType,
             hardwareAddress = addr,
-            proxy = proxy,
             laneId = laneId,
             interfaceAddress = lane.interfaceAddress
               or (cfg.machineTransposers and cfg.machineTransposers[laneId]
@@ -960,110 +918,21 @@ function ConfigUI:buildExecConfig()
     pollInterval      = cfg.pollInterval or 0.5,
     heartbeatInterval = cfg.heartbeatInterval or 2.0,
     debounceWindow    = cfg.debounceWindow or 1.5,
+    dbSlots           = cfg.dbSlots or 9,
   }
 
-  -- Buffer and database addresses (expected by exec_broker)
-  local itemBuf = cfg.itemBufferAddr
-  if not itemBuf or itemBuf == '' then
-    itemBuf = cfg.centralBufferAddr
-  end
-  execConfig.itemBufferAddr = itemBuf or ''
-  execConfig.fluidBufferAddr = cfg.fluidBufferAddr or ''
+  -- ME Controller and database addresses (expected by exec_broker)
+  execConfig.meControllerAddr = cfg.meControllerAddr or ''
   execConfig.databaseAddr = cfg.databaseAddr or ''
 
-  -- Build bufferFeeder closure: polls item/fluid buffers via transposer
-  -- Uses the first available transposer (all transposers on same network can
-  -- address any controller). Captures the addresses, not live proxies —
-  -- HAL or transposer resolves them at call time.
+  -- Build bufferFeeder closure: single HAL call to ME Controller
+  -- (replaces old inventory_controller + tank_controller dual-adapter approach)
   local bufferFeeder = nil
-  local ibAddr = execConfig.itemBufferAddr
-  local fbAddr = execConfig.fluidBufferAddr
-  local itemSide = (cfg.halSideMap and cfg.halSideMap.itemBuffer) or 0
-  local fluidSide = (cfg.halSideMap and cfg.halSideMap.fluidBuffer) or 1
-  if (ibAddr and ibAddr ~= '') or (fbAddr and fbAddr ~= '') then
-    -- Item buffer reader: inventory_controller API (getInventorySize + getStackInSlot)
-    local function _readItemBuffer(addr, side)
-      if not addr or addr == '' then return {} end
-      local ok, proxy = pcall(component.proxy, addr)
-      if not ok or not proxy then return {} end
-      local contents = {}
-      local szOk, sz = pcall(function() return proxy.getInventorySize(side) end)
-      if szOk and type(sz) == 'number' and sz > 0 then
-        for slot = 1, math.min(sz, 128) do
-          local stOk, stack = pcall(function() return proxy.getStackInSlot(side, slot) end)
-          -- getStackInSlot may not include .size on GTNH controllers —
-          -- use getSlotStackSize for the actual count
-          local count = 0
-          if stack then
-            if stack.size and stack.size > 0 then
-              count = stack.size
-            else
-              local cntOk, cnt = pcall(function() return proxy.getSlotStackSize(side, slot) end)
-              if cntOk and type(cnt) == 'number' then count = cnt end
-            end
-          end
-          if stOk and stack and count > 0 then
-            table.insert(contents, {
-              name = stack.name or stack.label or 'unknown',
-              label = stack.label or stack.name or 'unknown',
-              size = count,
-            })
-          end
-        end
-      end
-      return contents
-    end
-
-    -- Fluid buffer reader: tank_controller API (getTankCount + getFluidInTank)
-    local function _readFluidBuffer(addr, side)
-      if not addr or addr == '' then return {} end
-      local ok, proxy = pcall(component.proxy, addr)
-      if not ok or not proxy then return {} end
-      local contents = {}
-      local tcOk, tankCount = pcall(function() return proxy.getTankCount(side) end)
-      if tcOk and type(tankCount) == 'number' and tankCount > 0 then
-        for tank = 1, math.min(tankCount, 32) do
-          local flOk, fluid = pcall(function() return proxy.getFluidInTank(side, tank) end)
-          if flOk and fluid and fluid.label then
-            local lvOk, level = pcall(function() return proxy.getTankLevel(side, tank) end)
-            table.insert(contents, {
-              name = fluid.name or fluid.label or 'unknown',
-              label = fluid.label or 'unknown',
-              amount = (lvOk and level) or 0,
-            })
-          end
-        end
-      end
-      return contents
-    end
-
-    -- Fluid buffer reader: tank_controller API (getTankCount + getFluidInTank)
-    local function _readFluidBuffer(addr, side)
-      if not addr or addr == '' then return {} end
-      local ok, proxy = pcall(component.proxy, addr)
-      if not ok or not proxy then return {} end
-      local contents = {}
-      local tcOk, tankCount = pcall(function() return proxy.getTankCount(side) end)
-      if tcOk and type(tankCount) == 'number' and tankCount > 0 then
-        for tank = 1, math.min(tankCount, 32) do
-          local flOk, fluid = pcall(function() return proxy.getFluidInTank(side, tank) end)
-          if flOk and fluid and fluid.label then
-            local lvOk, level = pcall(function() return proxy.getTankLevel(side, tank) end)
-            table.insert(contents, {
-              name = fluid.name or fluid.label or 'unknown',
-              label = fluid.label or 'unknown',
-              amount = (lvOk and level) or 0,
-            })
-          end
-        end
-      end
-      return contents
-    end
-
+  local meAddr = execConfig.meControllerAddr
+  if meAddr and meAddr ~= '' then
+    local HAL = self._hal  -- capture for use inside closure
     bufferFeeder = function()
-      local items = _readItemBuffer(ibAddr, itemSide)
-      local fluids = _readFluidBuffer(fbAddr, fluidSide)
-      return { items = items, fluids = fluids }
+      return HAL:getMEContents(meAddr)
     end
   end
   execConfig.bufferFeeder = bufferFeeder
@@ -1279,33 +1148,25 @@ function ConfigUI:runSetupWizard()
   local rsAddr = self:_selectComponent("redstone", detected.redstone, "Select redstone block (or skip)")
   self._config.redstoneAddress = rsAddr
 
-  -- Step 5a: Item Buffer (Drawers)
+  -- Step 5: ME Controller (Central Buffer)
   self:_clear()
-  self:_drawTitle("Step 5: Item Buffer (Drawers)")
-  self:_writeLine(3, "The item buffer holds materials before dispatch to machines.", COLOR_CYAN)
-  self:_writeLine(4, "Typically a Storage Drawer Controller or chest of drawers.")
-  self:_writeLine(5, "Items are pulled from the ME network into these drawers.")
-  self:_writeLine(6, "")
+  self:_drawTitle("Step 5: ME Controller (Central Buffer)")
+  self:_writeLine(3, "The ME Controller provides direct access to the AE2 network.", COLOR_CYAN)
+  self:_writeLine(4, "Items and fluids are queried via getItemsInNetwork().")
+  self:_writeLine(5, "Replaces the old inventory controller + tank controller approach.")
+  if detected.meController then
+    self:_writeLine(7, string.format("Detected: %s", detected.meController.address), COLOR_GREEN)
+  end
+  self:_writeLine(9, "")
 
-  local drawerAddr = self:_readLine("Item buffer address (drawers, or skip): ", "")
-  self._config.itemBufferAddr = drawerAddr
+  local meAddr = self:_readLine("ME Controller address (or skip): ", detected.meController and detected.meController.address or "")
+  self._config.meControllerAddr = meAddr
 
-  -- Step 5b: Fluid Buffer (Hatches)
+  -- Step 6: Database
   self:_clear()
-  self:_drawTitle("Step 5b: Fluid Buffer (Hatches)")
-  self:_writeLine(3, "The fluid buffer holds liquids before dispatch to machines.", COLOR_CYAN)
-  self:_writeLine(4, "Typically a Fluid Hatch or tank adjacent to the computer.")
-  self:_writeLine(5, "Fluids are pumped from the ME network into these hatches.")
-  self:_writeLine(6, "")
-
-  local hatchAddr = self:_readLine("Fluid buffer address (hatch, or skip): ", "")
-  self._config.fluidBufferAddr = hatchAddr
-
-  -- Step 5c: Database
-  self:_clear()
-  self:_drawTitle("Step 5c: Database")
+  self:_drawTitle("Step 6: Database")
   self:_writeLine(3, "The OC database stores item stack information.", COLOR_CYAN)
-  self:_writeLine(4, "The broker reads available items from this database")
+  self:_writeLine(4, "The broker stores items to / reads from this database")
   self:_writeLine(5, "and sets them into each lane's dual interface.")
   self:_writeLine(6, "")
   self:_writeLine(7, "Required — the broker cannot transfer items without it.", COLOR_YELLOW)
@@ -1314,9 +1175,9 @@ function ConfigUI:runSetupWizard()
   local dbAddr = self:_readLine("Database address: ", "")
   self._config.databaseAddr = dbAddr
 
-  -- Step 6: Lane configuration
+  -- Step 7: Lane configuration
   self:_clear()
-  self:_drawTitle("Step 6: Lane Configuration")
+  self:_drawTitle("Step 7: Lane Configuration")
   self:_writeLine(3, "Configure each processing lane that this broker manages.", COLOR_CYAN)
   self:_writeLine(4, "Each lane contains an adapter, dual interface, transposer, and machine.")
   self:_writeLine(5, "Lanes are numbered sequentially (Lane 1, Lane 2, ...).")
@@ -1477,7 +1338,7 @@ function ConfigUI:_setupTransposerSides(laneId)
     machineAddr    = machine,
     pull           = pullSide,
     push           = pushSide,
-    ["return"]     = returnSide,
+    return_     = returnSide,
   }
 end
 
@@ -1515,14 +1376,14 @@ function ConfigUI:_showConfigSummary()
   self:_writeLine(y, "  Modem:              " .. (cfg.modemAddress ~= "" and cfg.modemAddress or "(none)"), self:_statusColor(cfg.modemAddress)); y = y + 1
   self:_writeLine(y, "  Telemetry Port:     " .. tostring(cfg.telemetryPort)); y = y + 1
   self:_writeLine(y, "  Redstone I/O:       " .. (cfg.redstoneAddress ~= "" and cfg.redstoneAddress or "(none)"), self:_statusColor(cfg.redstoneAddress)); y = y + 1
-  self:_writeLine(y, "  Item Buffer:       " .. (cfg.itemBufferAddr ~= "" and cfg.itemBufferAddr or "(none)"), self:_statusColor(cfg.itemBufferAddr)); y = y + 1
-  self:_writeLine(y, "  Fluid Buffer:      " .. (cfg.fluidBufferAddr ~= "" and cfg.fluidBufferAddr or "(none)"), self:_statusColor(cfg.fluidBufferAddr)); y = y + 1
+  self:_writeLine(y, "  ME Controller:     " .. (cfg.meControllerAddr ~= "" and cfg.meControllerAddr or "(none)"), self:_statusColor(cfg.meControllerAddr)); y = y + 1
   self:_writeLine(y, "  Database:          " .. (cfg.databaseAddr ~= "" and cfg.databaseAddr or "(none)"), self:_statusColor(cfg.databaseAddr)); y = y + 1
   self:_writeLine(y, "  Lanes:              " .. tostring(#(cfg.machines or {})) .. " configured"); y = y + 1
   self:_writeLine(y, "  Poll Interval:      " .. tostring(cfg.pollInterval) .. "s"); y = y + 1
   self:_writeLine(y, "  Heartbeat Interval: " .. tostring(cfg.heartbeatInterval) .. "s"); y = y + 1
   self:_writeLine(y, "  Debounce Window:    " .. tostring(cfg.debounceWindow) .. "s"); y = y + 1
   self:_writeLine(y, "  Queue Size:         " .. tostring(cfg.queueSize)); y = y + 1
+  self:_writeLine(y, "  DB Slots:           " .. tostring(cfg.dbSlots or 9)); y = y + 1
 
   if cfg.machines and #cfg.machines > 0 then
     y = y + 1
@@ -1533,7 +1394,7 @@ function ConfigUI:_showConfigSummary()
       local transposer = ""
       if cfg.machineTransposers and cfg.machineTransposers[id] then
         local t = cfg.machineTransposers[id]
-        transposer = string.format(" [pull=%d push=%d ret=%d]", t.pull or 0, t.push or 0, t["return"] or 0)
+        transposer = string.format(" [pull=%d push=%d ret=%d]", t.pull or 0, t.push or 0, t.return_ or 0)
       end
       self:_writeLine(y, string.format("    %s: %s%s", id, addr:sub(1, 20), transposer), COLOR_GRAY); y = y + 1
     end
@@ -1577,8 +1438,7 @@ function ConfigUI:runConfigMenu()
       { label = "Broker Identity",              action = "broker_id" },
       { label = "Modem & Telemetry",            action = "modem" },
       { label = "Redstone I/O Block",           action = "redstone" },
-      { label = "Item Buffer (Drawers)",          action = "item_buffer" },
-      { label = "Fluid Buffer (Hatches)",         action = "fluid_buffer" },
+      { label = "ME Controller (Central Buffer)",  action = "me_controller" },
       { label = string.format("Machines [%d]", machineCount), action = "machines" },
       { label = "Timing & Queue",               action = "timing" },
       { label = "HAL Side Mappings",            action = "hal_sides" },
@@ -1611,10 +1471,8 @@ function ConfigUI:runConfigMenu()
       self:_editModem()
     elseif action == "redstone" then
       self:_editRedstone()
-    elseif action == "item_buffer" then
-      self:_editItemBuffer()
-    elseif action == "fluid_buffer" then
-      self:_editFluidBuffer()
+    elseif action == "me_controller" then
+      self:_editMEController()
     elseif action == "machines" then
       self:_editMachines()
     elseif action == "timing" then
@@ -1686,27 +1544,15 @@ function ConfigUI:_editRedstone()
   end
 end
 
---- Edit item buffer address (drawers).
-function ConfigUI:_editItemBuffer()
+--- Edit ME Controller address (central buffer).
+function ConfigUI:_editMEController()
   self:_clear()
-  self:_drawTitle("Item Buffer (Drawers)")
-  self:_writeLine(3, "Current: " .. (self._config.itemBufferAddr ~= "" and self._config.itemBufferAddr or "(not configured)"), self:_statusColor(self._config.itemBufferAddr))
-  self:_writeLine(4, "Enter the address of your drawer controller or storage drawer.")
-  local addr = self:_readLine("Item buffer address (or blank to keep): ")
+  self:_drawTitle("ME Controller (Central Buffer)")
+  self:_writeLine(3, "Current: " .. (self._config.meControllerAddr ~= "" and self._config.meControllerAddr or "(not configured)"), self:_statusColor(self._config.meControllerAddr))
+  self:_writeLine(4, "Enter the address of your ME Controller.")
+  local addr = self:_readLine("ME Controller address (or blank to keep): ")
   if addr ~= "" then
-    self._config.itemBufferAddr = addr
-  end
-end
-
---- Edit fluid buffer address (hatches).
-function ConfigUI:_editFluidBuffer()
-  self:_clear()
-  self:_drawTitle("Fluid Buffer (Hatches)")
-  self:_writeLine(3, "Current: " .. (self._config.fluidBufferAddr ~= "" and self._config.fluidBufferAddr or "(not configured)"), self:_statusColor(self._config.fluidBufferAddr))
-  self:_writeLine(4, "Enter the address of your fluid hatch or tank.")
-  local addr = self:_readLine("Fluid buffer address (or blank to keep): ")
-  if addr ~= "" then
-    self._config.fluidBufferAddr = addr
+    self._config.meControllerAddr = addr
   end
 end
 
@@ -1917,24 +1763,14 @@ function ConfigUI:_runConnectivityTest()
     rsOk and COLOR_GREEN or COLOR_RED)
   y = y + 1
 
-  -- Test item buffer
-  local itemOk, itemMsg = true, "Not configured"
-  if self._config.itemBufferAddr and self._config.itemBufferAddr ~= "" then
-    itemOk, itemMsg = self:testComponent(self._config.itemBufferAddr)
+  -- Test ME Controller
+  local meOk, meMsg = true, "Not configured"
+  if self._config.meControllerAddr and self._config.meControllerAddr ~= "" then
+    meOk, meMsg = self:testComponent(self._config.meControllerAddr)
   end
-  table.insert(results, { name = "Item Buffer (Drawers)", ok = itemOk, msg = itemMsg })
-
-  -- Test fluid buffer
-  local fluidOk, fluidMsg = true, "Not configured"
-  if self._config.fluidBufferAddr and self._config.fluidBufferAddr ~= "" then
-    fluidOk, fluidMsg = self:testComponent(self._config.fluidBufferAddr)
-  end
-  table.insert(results, { name = "Fluid Buffer (Hatches)", ok = fluidOk, msg = fluidMsg })
-  self:_writeLine(y, "  Item Buffer:        " .. (itemOk and "OK" or "FAIL") .. " - " .. itemMsg,
-    itemOk and COLOR_GREEN or COLOR_RED)
-  y = y + 1
-  self:_writeLine(y, "  Fluid Buffer:       " .. (fluidOk and "OK" or "FAIL") .. " - " .. fluidMsg,
-    fluidOk and COLOR_GREEN or COLOR_RED)
+  table.insert(results, { name = "ME Controller", ok = meOk, msg = meMsg })
+  self:_writeLine(y, "  ME Controller:      " .. (meOk and "OK" or "FAIL") .. " - " .. meMsg,
+    meOk and COLOR_GREEN or COLOR_RED)
   y = y + 1
 
   -- Test each machine
@@ -1993,8 +1829,7 @@ function ConfigUI:_showConnectionStatus()
   showEntry("Broker ID:", self._config.brokerId)
   showEntry("Modem:", self._config.modemAddress)
   showEntry("Redstone:", self._config.redstoneAddress)
-  showEntry("Item Buffer:", self._config.itemBufferAddr)
-  showEntry("Fluid Buffer:", self._config.fluidBufferAddr)
+  showEntry("ME Controller:", self._config.meControllerAddr)
 
   y = y + 1
   local count = #(self._config.machines or {})
