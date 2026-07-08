@@ -113,7 +113,7 @@ function MockModules.MachineNode:injectFault(code, desc)
   self._faultCode = code or 500
   self._faultDesc = desc or "Injected fault"
   self._status = "FAULTED"
-  self.maintenanceFlags = { code = code or 500, description = desc or "Injected fault" }
+  self.maintenanceFlags = { hasFault = true, code = code or 500, description = desc or "Injected fault" }
   table.insert(self._callLog, "injectFault:" .. (code or 500))
 end
 
@@ -177,12 +177,6 @@ MockModules.HAL.CAP_ITEM_OUTPUT = "item_output"
 function MockModules.HAL.new(config)
   local self = setmetatable({}, MockModules.HAL)
   self._config = config or {}
-  self._sideMap = config and config.sideMap or {
-    interface    = 4,   -- sides.right
-    inputHatch   = 1,   -- sides.top
-    outputHatch  = 0,   -- sides.bottom
-    redstone     = 2,   -- sides.back
-  }
   self._capabilities = config and config.capabilities or {
     basic = { "item_input", "item_output" },
     fluid = { "item_input", "item_output", "fluid_input", "fluid_output" },
@@ -230,13 +224,8 @@ function MockModules.HAL:pollMachineHardware(machineNode)
   return { active = active, progress = active and 45 or 0, maxProgress = 100, hasWork = active, faulted = faulted, faultReason = faulted and "mock fault" or nil, name = machineNode.machineType or "gt_machine", eu = nil, euCapacity = nil }
 end
 
-function MockModules.HAL:resolveSide(name)
-  if not self._sideMap[name] then return nil end
-  return self._sideMap[name]
-end
-
-function MockModules.HAL:drainInventory(fromSide, toSide)
-  local entry = { from = fromSide, to = toSide, timestamp = os.time() }
+function MockModules.HAL:drainInventory(transposerAddress, fromSide, toSide)
+  local entry = { addr = transposerAddress, from = fromSide, to = toSide, timestamp = os.time() }
   table.insert(self._drainLog, entry)
   return 64 -- pretend we moved 64 items
 end
@@ -334,6 +323,16 @@ function MockModules.HAL:setRedstone(side, value)
   table.insert(self._redstoneCalls, { side = side, value = value, timestamp = os.time() })
 end
 
+function MockModules.HAL:setRedstoneLock(redstoneLockAddress, side, value)
+  table.insert(self._redstoneCalls, { type = "setRedstoneLock", address = redstoneLockAddress, side = side, value = value, timestamp = os.time() })
+  return true
+end
+
+function MockModules.HAL:pulseRedstoneLock(redstoneLockAddress, side, pulseDuration)
+  table.insert(self._redstoneCalls, { type = "pulseRedstoneLock", address = redstoneLockAddress, side = side, duration = pulseDuration, timestamp = os.time() })
+  return true
+end
+
 function MockModules.HAL:getRedstone(side)
   -- Return the last value set for this side, or 0
   for i = #self._redstoneCalls, 1, -1 do
@@ -342,6 +341,17 @@ function MockModules.HAL:getRedstone(side)
     end
   end
   return 0
+end
+
+function MockModules.HAL:checkInterfaceStocked(ifaceAddress, slotCount)
+  table.insert(self._redstoneCalls, { type = "checkInterfaceStocked", address = ifaceAddress, slots = slotCount, timestamp = os.time() })
+  return true  -- pretend interface is always stocked
+end
+
+function MockModules.HAL:getInventoryContents(transposerAddress, side)
+  local entry = { addr = transposerAddress, side = side, timestamp = os.time() }
+  table.insert(self._drainLog, entry)
+  return {}  -- pretend inventory is empty
 end
 
 -- ===========================================================================
@@ -434,7 +444,7 @@ MockModules.IntegrationSnapshot = {}
 MockModules.IntegrationSnapshot.__index = MockModules.IntegrationSnapshot
 
 -- We need to build this on top of the real BufferSnapshot from src/
-local RealBufferSnapshot = require("src.buffersnapshot")
+local RealBufferSnapshot = require("src.BufferSnapshot")
 
 function MockModules.IntegrationSnapshot.new(debounceWindow)
   local self = setmetatable({}, MockModules.IntegrationSnapshot)

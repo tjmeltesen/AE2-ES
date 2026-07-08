@@ -38,42 +38,6 @@ ConfigUI.__index = ConfigUI
 ConfigUI.VERSION = "1.0.0"
 ConfigUI.CONFIG_PATH = "/home/ae2es_broker.cfg"
 
--- Side display labels (indexed by side constant)
-local SIDE_LABELS = {
-  [0] = "bottom",
-  [1] = "top",
-  [2] = "back",
-  [3] = "front",
-  [4] = "left",
-  [5] = "right",
-}
-
--- Side name→constant lookup
-local SIDE_NAMES = {
-  bottom = 0, top = 1, back = 2, front = 3, left = 4, right = 5,
-}
-
--- Side constants for display
-local SIDES = { "bottom", "top", "back", "front", "left", "right" }
-
--- HAL side role labels
-local HAL_ROLES = {
-  "inputBus", "inputHatch",
-  "interface",
-  "transposerInput", "transposerOutput", "transposerReturn",
-}
-
--- Default side mapping (matches HAL defaults)
-local DEFAULT_SIDE_MAP = {
-  inputBus    = 0,  -- bottom (items enter machine here)
-  inputHatch  = 4,  -- west/left (fluid enters machine here)
-  interface   = 1,  -- top
-  transposerInput  = 2,  -- north/back (transposer pulls from drawer here)
-  transposerOutput = 3,  -- south/front (transposer drops into machine input bus)
-  transposerReturn = 5,  -- east/right (transposer pulls machine output → return chest)
-  fluidExport     = 2,  -- north/back (interface side for fluid conduit)
-}
-
 -- Default configuration template
 local DEFAULT_CONFIG = {
   brokerId          = "",
@@ -82,6 +46,7 @@ local DEFAULT_CONFIG = {
   machines          = {},
   machineTypes      = {},
   redstoneAddress   = "",
+  redstoneSide      = 5,
   meControllerAddr = "",  -- ME Controller (central buffer; replaces item/fluid adapters)
   databaseAddr    = "",    -- OC database (stores item stack data for transfer)
   -- Per-lane transposer config (set during machine config)
@@ -92,7 +57,6 @@ local DEFAULT_CONFIG = {
   debounceWindow    = 1.5,
   queueSize         = 64,
   dbSlots           = 9,     -- OC Database slot count (1-9 standard, up to 16 with upgrades)
-  halSideMap        = {},
 }
 
 -- Capability profile labels for display
@@ -463,6 +427,7 @@ function ConfigUI:detectComponents()
     modem = nil,
     transposer = nil,
     redstone = nil,
+    database = nil,
     meController = nil,
     meInterfaces = {},
     gtMachines = {},
@@ -493,6 +458,8 @@ function ConfigUI:detectComponents()
       result.transposer = entry
     elseif name == "redstone" then
       result.redstone = entry
+    elseif name == "database" then
+      result.database = entry
     elseif name == "me_controller" then
       result.meController = entry
     elseif name == "me_interface" then
@@ -832,10 +799,6 @@ function ConfigUI:resetConfig()
       config[k] = v
     end
   end
-  config.halSideMap = {}
-  for role, side in pairs(DEFAULT_SIDE_MAP) do
-    config.halSideMap[role] = side
-  end
   self._config = config
   return config
 end
@@ -904,9 +867,7 @@ function ConfigUI:buildExecConfig()
   end
 
   -- Build HAL config
-  local halConfig = {
-    sideMap = cfg.halSideMap or {},
-  }
+  local halConfig = {}
 
   local execConfig = {
     brokerId          = cfg.brokerId or "broker-1",
@@ -924,6 +885,8 @@ function ConfigUI:buildExecConfig()
   -- ME Controller and database addresses (expected by exec_broker)
   execConfig.meControllerAddr = cfg.meControllerAddr or ''
   execConfig.databaseAddr = cfg.databaseAddr or ''
+  execConfig.redstoneAddress = cfg.redstoneAddress or ''
+  execConfig.redstoneSide = cfg.redstoneSide or 5
 
   -- Build bufferFeeder closure: single HAL call to ME Controller
   -- (replaces old inventory_controller + tank_controller dual-adapter approach)
@@ -1148,6 +1111,13 @@ function ConfigUI:runSetupWizard()
   local rsAddr = self:_selectComponent("redstone", detected.redstone, "Select redstone block (or skip)")
   self._config.redstoneAddress = rsAddr
 
+  if rsAddr and rsAddr ~= "" then
+    self:_writeLine(5, "")
+    self:_writeLine(6, "Sides: 0=bottom, 1=top, 2=back, 3=front, 4=left, 5=right", COLOR_DIM)
+    local rsSide = self:_readNumber("Redstone lock output side", 5, 0, 5)
+    self._config.redstoneSide = rsSide
+  end
+
   -- Step 5: ME Controller (Central Buffer)
   self:_clear()
   self:_drawTitle("Step 5: ME Controller (Central Buffer)")
@@ -1170,9 +1140,12 @@ function ConfigUI:runSetupWizard()
   self:_writeLine(5, "and sets them into each lane's dual interface.")
   self:_writeLine(6, "")
   self:_writeLine(7, "Required — the broker cannot transfer items without it.", COLOR_YELLOW)
-  self:_writeLine(8, "")
+  if detected.database then
+    self:_writeLine(9, string.format("Detected: %s", detected.database.address), COLOR_GREEN)
+  end
+  self:_writeLine(10, "")
 
-  local dbAddr = self:_readLine("Database address: ", "")
+  local dbAddr = self:_readLine("Database address: ", detected.database and detected.database.address or "")
   self._config.databaseAddr = dbAddr
 
   -- Step 7: Lane configuration
@@ -1210,28 +1183,6 @@ function ConfigUI:runSetupWizard()
   self._config.heartbeatInterval = self:_readNumber("Heartbeat interval (seconds)", 2.0, 0.1, 300)
   self._config.debounceWindow = self:_readNumber("Buffer debounce window (seconds)", 1.5, 0.1, 30)
   self._config.queueSize = self:_readNumber("Job queue max size", 64, 1, 1000)
-
-  -- Step 8: HAL side mappings
-  self:_clear()
-  self:_drawTitle("Step 8: HAL Side Mappings")
-  self:_writeLine(3, "Configure which OC side each hardware role is on.", COLOR_CYAN)
-  self:_writeLine(4, "Sides are relative to the computer:", COLOR_GRAY)
-  self:_writeLine(5, "  0=bottom, 1=top, 2=back, 3=front, 4=left, 5=right", COLOR_DIM)
-  self:_writeLine(6, "")
-
-  if self:_confirm("Configure side mappings? (defaults are usually fine)", false) then
-    for _, role in ipairs(HAL_ROLES) do
-      local default = self._config.halSideMap[role] or DEFAULT_SIDE_MAP[role] or 3
-      local label = string.format("  %s side", role)
-      local side = self:_readNumber(label, default, 0, 5)
-      self._config.halSideMap[role] = side
-    end
-  else
-    -- Use defaults
-    for role, side in pairs(DEFAULT_SIDE_MAP) do
-      self._config.halSideMap[role] = side
-    end
-  end
 
   -- Step 9: Summary & save
   self:_clear()
@@ -1376,6 +1327,7 @@ function ConfigUI:_showConfigSummary()
   self:_writeLine(y, "  Modem:              " .. (cfg.modemAddress ~= "" and cfg.modemAddress or "(none)"), self:_statusColor(cfg.modemAddress)); y = y + 1
   self:_writeLine(y, "  Telemetry Port:     " .. tostring(cfg.telemetryPort)); y = y + 1
   self:_writeLine(y, "  Redstone I/O:       " .. (cfg.redstoneAddress ~= "" and cfg.redstoneAddress or "(none)"), self:_statusColor(cfg.redstoneAddress)); y = y + 1
+  self:_writeLine(y, "  Redstone Side:     " .. tostring(cfg.redstoneSide or 5)); y = y + 1
   self:_writeLine(y, "  ME Controller:     " .. (cfg.meControllerAddr ~= "" and cfg.meControllerAddr or "(none)"), self:_statusColor(cfg.meControllerAddr)); y = y + 1
   self:_writeLine(y, "  Database:          " .. (cfg.databaseAddr ~= "" and cfg.databaseAddr or "(none)"), self:_statusColor(cfg.databaseAddr)); y = y + 1
   self:_writeLine(y, "  Lanes:              " .. tostring(#(cfg.machines or {})) .. " configured"); y = y + 1
@@ -1441,7 +1393,6 @@ function ConfigUI:runConfigMenu()
       { label = "ME Controller (Central Buffer)",  action = "me_controller" },
       { label = string.format("Machines [%d]", machineCount), action = "machines" },
       { label = "Timing & Queue",               action = "timing" },
-      { label = "HAL Side Mappings",            action = "hal_sides" },
       { label = "Test Connectivity",            action = "test" },
       { label = "Connection status",            action = "status" },
       { label = "Import Configuration",         action = "import" },
@@ -1477,8 +1428,6 @@ function ConfigUI:runConfigMenu()
       self:_editMachines()
     elseif action == "timing" then
       self:_editTiming()
-    elseif action == "hal_sides" then
-      self:_editHALSides()
     elseif action == "test" then
       self:_runConnectivityTest()
     elseif action == "status" then
@@ -1531,17 +1480,20 @@ function ConfigUI:_editModem()
   self._config.telemetryPort = port
 end
 
---- Edit redstone I/O block address.
+--- Edit redstone I/O block address and side.
 function ConfigUI:_editRedstone()
   self:_clear()
   self:_drawTitle("Redstone I/O Block")
-  self:_writeLine(3, "Current: " .. (self._config.redstoneAddress ~= "" and self._config.redstoneAddress or "(not configured)"), self:_statusColor(self._config.redstoneAddress))
+  self:_writeLine(3, "Current address: " .. (self._config.redstoneAddress ~= "" and self._config.redstoneAddress or "(not configured)"), self:_statusColor(self._config.redstoneAddress))
+  self:_writeLine(4, "Current side: " .. tostring(self._config.redstoneSide or 5))
+  self:_writeLine(5, "Sides: 0=bottom, 1=top, 2=back, 3=front, 4=left, 5=right", COLOR_DIM)
+  self:_writeLine(6, "")
   local addr = self:_readLine("Redstone component address (or blank to keep): ")
   if addr and #addr > 0 then
     self._config.redstoneAddress = addr
-  elseif addr == "" then
-    -- Keep current
   end
+  local side = self:_readNumber("Redstone lock output side", self._config.redstoneSide or 5, 0, 5)
+  self._config.redstoneSide = side
 end
 
 --- Edit ME Controller address (central buffer).
@@ -1706,28 +1658,7 @@ function ConfigUI:_editTiming()
 end
 
 --- Edit HAL side mappings.
-function ConfigUI:_editHALSides()
-  self:_clear()
-  self:_drawTitle("HAL Side Mappings")
-  self:_writeLine(3, "Sides: 0=bottom, 1=top, 2=back, 3=front, 4=left, 5=right", COLOR_DIM)
-  self:_separator(4)
-
-  for i, role in ipairs(HAL_ROLES) do
-    local current = self._config.halSideMap[role] or DEFAULT_SIDE_MAP[role] or 3
-    local label = SIDE_LABELS[current] or "?"
-    self:_writeLine(4 + i, string.format("  %s: %s (%d)", role, label, current), COLOR_GRAY)
-  end
-
-  if not self:_confirm("Edit side mappings", false) then return end
-
-  for _, role in ipairs(HAL_ROLES) do
-    local current = self._config.halSideMap[role] or DEFAULT_SIDE_MAP[role] or 3
-    local side = self:_readNumber(string.format("  %s side [current: %d]", role, current), current, 0, 5)
-    self._config.halSideMap[role] = side
-  end
-
-  self:_showMessage("Side mappings updated.")
-end
+-- (HAL side mappings removed — sides are per-lane now)
 
 -- ===========================================================================
 -- Connectivity testing

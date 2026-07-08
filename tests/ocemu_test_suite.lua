@@ -55,7 +55,6 @@ test("hal loads and constructs", function()
   assert(type(mod) == "table", "not a table")
   local instance = mod:new()
   assert(type(instance) == "table", "instance not a table")
-  assert(type(instance.resolveSide) == "function", "resolveSide missing")
 end)
 
 test("supervisor module loads", function()
@@ -152,6 +151,7 @@ test("config_ui saveConfig creates file", function()
     machineTypes = {},
     modemAddress = "",
     redstoneAddress = "",
+    redstoneSide = 5,
   }
   local ok, err = ui:saveConfig()
   assert(ok, "saveConfig failed: " .. (err or "unknown"))

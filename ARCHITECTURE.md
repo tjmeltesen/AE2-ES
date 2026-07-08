@@ -252,13 +252,6 @@ local hal = HAL.new({
 | `getProxy(address)` | Get cached OC component proxy. Creates one if needed. Returns nil on failure. |
 | `invalidateCache(address)` | Force-refresh a proxy (call after disconnect errors) |
 
-#### Side Resolution
-
-| Method | Purpose |
-|--------|---------|
-| `resolveSide(role)` | Map logical role name → side number. e.g. `resolveSide("inputBus")` → `0` |
-| `setSideMapping(role, side)` | Override a side mapping at runtime |
-
 #### Inventory Operations
 
 | Method | Signature | Purpose |
@@ -648,5 +641,5 @@ The broker logger outputs at 4 levels. Watch for these patterns:
 
 [WARN]  No transposer config for lane X    ← missing machineTransposers config
 [DEBUG] TRANSFER: interface slot 1 still empty ← AE2 hasn't delivered yet (normal, retries)
-[ERROR] Cannot resolve transfer sides      ← halSideMap missing a role
+[ERROR] Cannot resolve transfer sides      ← lane config missing pull/push/return_
 ```

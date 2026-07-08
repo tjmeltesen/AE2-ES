@@ -34,7 +34,7 @@ end
 -- ---------------------------------------------------------------------------
 -- Production modules — exercise actual production code, not inline stubs
 -- ---------------------------------------------------------------------------
-local ProdBufferSnapshot = require("buffersnapshot")
+local ProdBufferSnapshot = require("src.BufferSnapshot")
 local JobManifest = require("jobmanifest")
 
 -- ---------------------------------------------------------------------------

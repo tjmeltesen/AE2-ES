@@ -246,6 +246,21 @@ function BufferSnapshot:getSnapshotData()
     end
   end
 
+  -- Old-style key→value map backward compat: {iron={label=..., size=...}, copper={...}}
+  if #items == 0 and #fluids == 0 then
+    for k, v in pairs(buffer) do
+      if type(v) == "table" and (v.label or v.size) then
+        table.insert(items, {
+          label  = v.label,
+          size   = v.size,
+          name   = v.name or k,
+          damage = v.damage,
+          nbt    = v.nbt,
+        })
+      end
+    end
+  end
+
   return { items = items, fluids = fluids }
 end
 

@@ -1089,7 +1089,7 @@ end
 -- Detects direct execution vs require() via package.loaded.
 if not package.loaded["supervisor.config_ui"] then
   local _ep_ok, _ep_err = pcall(function()
-    local cfg = ConfigUI.run_or_wizard()
+    local cfg = ConfigUI.run_wizard()
     if cfg then
       ConfigUI.save_config(cfg)
       print("Configuration saved. Run supervisor.lua to start the supervisor.")

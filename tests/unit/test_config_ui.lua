@@ -286,13 +286,11 @@ do
     assert_equal(#(config.machines), 0, "2.1: machines empty by default")
     assert_equal(config.modemAddress, "", "2.1: modemAddress empty by default")
     assert_equal(config.redstoneAddress, "", "2.1: redstoneAddress empty")
+    assert_equal(config.redstoneSide, 5, "2.1: redstoneSide defaults to 5")
     assert_equal(config.meControllerAddr, "", "2.1: meControllerAddr empty")
 
-    -- Test 2.2: HAL side map is populated with defaults
-    assert_not_nil(config.halSideMap, "2.2: halSideMap exists")
-    assert_equal(config.halSideMap.inputBus, 3, "2.2: inputBus -> front")
-    assert_equal(config.halSideMap.outputBus, 2, "2.2: outputBus -> back")
-    assert_equal(config.halSideMap.interface, 1, "2.2: interface -> top")
+    -- Test 2.2: redstoneSide has a default
+    assert_equal(config.redstoneSide, 5, "2.2: redstoneSide defaults to 5")
 
     -- Test 2.3: getConfig returns stored config
     assert_equal(ui:getConfig(), config, "2.3: getConfig same as reset config")
@@ -319,7 +317,7 @@ do
     ui._config.brokerId = "test-broker"
     ui._config.modemAddress = "abcd-1234-modem"
     ui._config.telemetryPort = 456
-    ui._config.machines = { "abcd-7890-gtmach" }
+    ui._config.machines = { { laneId = "abcd-7890-gtmach", machineAddr = "abcd-7890-gtmach" } }
     ui._config.machineTypes = { ["abcd-7890-gtmach"] = 1 }
     ui._config.pollInterval = 1.0
 
@@ -337,7 +335,7 @@ do
       assert_equal(type(loaded), "table", "3.2: Loaded result is table")
       assert_equal(loaded.brokerId, "test-broker", "3.2: brokerId round-trips")
       assert_equal(loaded.telemetryPort, 456, "3.2: telemetryPort round-trips")
-      assert_equal(loaded.machines[1], "abcd-7890-gtmach", "3.2: machines round-trips")
+      assert_equal(loaded.machines[1].machineAddr, "abcd-7890-gtmach", "3.2: machines round-trips")
     end
 
     -- Test 3.3: Array serialization
@@ -405,7 +403,7 @@ do
     ui._config.brokerId = "persist-broker"
     ui._config.modemAddress = "abcd-1234-modem"
     ui._config.telemetryPort = 789
-    ui._config.machines = { "abcd-7890-gtmach", "abcd-1111-gtmach" }
+    ui._config.machines = { { laneId = "abcd-7890-gtmach", machineAddr = "abcd-7890-gtmach" }, { laneId = "abcd-1111-gtmach", machineAddr = "abcd-1111-gtmach" } }
 
     local ok, err = ui:saveConfig()
     assert_true(ok, "4.1: Save succeeded")
@@ -424,7 +422,7 @@ do
       assert_equal(loaded.brokerId, "persist-broker", "4.2: brokerId persisted")
       assert_equal(loaded.telemetryPort, 789, "4.2: telemetryPort persisted")
       assert_equal(#loaded.machines, 2, "4.2: machine count persisted")
-      assert_equal(loaded.machines[1], "abcd-7890-gtmach", "4.2: machine[1] persisted")
+      assert_equal(loaded.machines[1].machineAddr, "abcd-7890-gtmach", "4.2: machine[1] persisted")
       assert_equal(loaded.version, ConfigUI.VERSION, "4.2: version marker saved")
     end
 
@@ -589,14 +587,12 @@ do
     ui._config.brokerId = "exec-target-broker"
     ui._config.modemAddress = "abcd-1234-modem"
     ui._config.telemetryPort = 999
-    ui._config.machines = { "abcd-7890-gtmach" }
+    ui._config.machines = { { laneId = "abcd-7890-gtmach", machineAddr = "abcd-7890-gtmach" } }
     ui._config.machineTypes = { ["abcd-7890-gtmach"] = 128 }
     ui._config.pollInterval = 0.25
     ui._config.heartbeatInterval = 5.0
     ui._config.debounceWindow = 2.0
     ui._config.queueSize = 32
-    ui._config.halSideMap.inputBus = 0
-
     -- Test 7.1: buildExecConfig returns valid config table
     local execCfg = ui:buildExecConfig()
     assert_not_nil(execCfg, "7.1: Exec config built")
@@ -609,7 +605,7 @@ do
 
     -- Test 7.2: HAL config is passed through
     assert_not_nil(execCfg.halConfig, "7.2: halConfig exists")
-    assert_equal(execCfg.halConfig.sideMap.inputBus, 0, "7.2: HAL side overrides applied")
+    assert_not_nil(execCfg.halConfig, "7.2: halConfig exists")
 
     -- Test 7.3: Modem is resolved to proxy
     assert_not_nil(execCfg.modem, "7.3: Modem resolved to proxy")
@@ -632,40 +628,7 @@ do
 end
 
 --===========================================================================
--- Group 8: Side display labels
---===========================================================================
-do
-    reportGroup("Group 8: Side management")
-
-    local gpu = MockGPU.new()
-    local fs = MockFilesystem.new()
-    local comp = makeComponents()
-    local ConfigUI = require("src.config_ui")
-    local ui = ConfigUI.new("/tmp/test.cfg", {
-        gpu = gpu,
-        filesystem = fs,
-        component = comp,
-    })
-    ui:resetConfig()
-
-    -- Test 8.1: All HAL roles have defaults
-    for _, role in ipairs({ "inputBus", "outputBus", "inputHatch", "outputHatch", "interface" }) do
-        local side = ui._config.halSideMap[role]
-        assert_not_nil(side, "8.1: HAL role " .. role .. " has a default side")
-        assert_true(side >= 0 and side <= 5, "8.1: Side " .. side .. " is valid (0-5)")
-    end
-
-    -- Test 8.2: Can update HAL side mapping
-    ui._config.halSideMap.inputBus = 4
-    assert_equal(ui._config.halSideMap.inputBus, 4, "8.2: inputBus side updated to left")
-
-    -- Test 8.3: Can update interface
-    ui._config.halSideMap.interface = 0
-    assert_equal(ui._config.halSideMap.interface, 0, "8.3: interface side set to bottom")
-end
-
---===========================================================================
--- Group 9: Config set/get
+-- Group 8: Config set/get
 --===========================================================================
 do
     reportGroup("Group 9: Config set/get")

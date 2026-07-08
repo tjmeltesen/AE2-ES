@@ -123,11 +123,7 @@ function ExecBroker.new(config)
   end
 
   -- Create HAL instance
-  -- Build halConfig: accept nested form (from buildExecConfig) or flat form (from saved config)
   local halConfig = config.halConfig or {}
-  if config.halSideMap and not halConfig.sideMap then
-    halConfig.sideMap = config.halSideMap
-  end
   local hal = M.HAL:new(halConfig)
 
   -- Create BufferSnapshot
@@ -210,6 +206,8 @@ function ExecBroker.new(config)
     _machineTransposers = config.machineTransposers or {},
     _meControllerAddr = config.meControllerAddr or "",
     _databaseAddr    = config.databaseAddr or "",
+        _redstoneLockAddr = config.redstoneAddress or "",
+        _redstoneLockSide = config.redstoneSide or 5,
 
     -- I/O
     _bufferFeeder    = config.bufferFeeder,
@@ -259,11 +257,7 @@ function ExecBroker.new(config)
         end
         return { items = {}, fluids = {} }
     end
-      if self._logger then
-        self._logger:debug(string.format(
-          "BUFFERING: feeder poll — %d items, %d fluids",
-          #result.items, #result.fluids))
-      end
+      --self._logger:debug(string.format("BUFFERING: feeder poll — %d items, %d fluids",#result.items, #result.fluids))
       return result
     end
   elseif self._bufferFeeder == nil and self._logger then
@@ -310,11 +304,11 @@ function ExecBroker:_phaseBUFFERING(pollResult)
     return ExecBroker.PHASES.BUFFERING
   end
 
-  if self._logger then self._logger:info("BUFFERING: snapshot stable=" .. tostring(pollResult)) end
+  --if self._logger then self._logger:info("BUFFERING: snapshot stable=" .. tostring(pollResult)) end
 
   if not pollResult then
     -- Still waiting for stability; yield and try again
-    if self._logger then self._logger:info("BUFFERING: snapshot not stable, waiting") end
+    --if self._logger then self._logger:info("BUFFERING: snapshot not stable, waiting") end
     return ExecBroker.PHASES.BUFFERING
   end
 
@@ -578,14 +572,6 @@ function ExecBroker:_transferForJob(addr, active)
     return
   end
 
-  -- Save sides for CLEANUP
-  active._laneSides = {
-    ifaceSide  = ifaceSide,
-    inputSide  = inputSide,
-    returnSide = returnSide,
-    ifaceAddr  = ifaceAddr,
-  }
-
   local dbAddr = self._databaseAddr
   local hal = self._hal
   local inputs = manifest.inputs
@@ -818,14 +804,20 @@ function ExecBroker:_transferForJob(addr, active)
     if self._logger then
       self._logger:info(string.format("TRANSFER: lane %s complete — iface+DB cleared, → PROCESSING", laneId))
     end
-
+    
+    -- Pulse redstone lock to signal lane is free for next job
+    if self._redstoneLockAddr and self._redstoneLockAddr ~= "" then
+      local ok, err = self._hal:pulseRedstoneLock(self._redstoneLockAddr, self._redstoneLockSide, 0.1)
+      if not ok then
+        self._logger:warn(string.format("TRANSFER: lane %s redstone pulse failed: %s", laneId, tostring(err)))
+      else
+        self._logger:info(string.format("TRANSFER: lane %s redstone pulse successful", laneId))
+      end
+    end
     manifest:updateState("PROCESSING")
     active.phase = ExecBroker.PHASES.PROCESSING
   end
 end
-
-
-
 -- ===========================================================================
 -- Phase 5: PROCESSING — Monitor machine until job completes
 -- ===========================================================================
@@ -884,20 +876,22 @@ function ExecBroker:_checkProcessingJob(laneId, active)
 
   -- Use maintenance check from HAL for comprehensive health
   local laneCfg = self._machineTransposers[laneId]
-  local health = self._hal:checkMaintenanceState(machine, laneCfg.transposerAddr, laneCfg.pull)
-  if health and health.faulted then
-    if self._logger then
-      self._logger:warn("PROCESSING: lane " .. laneId .. " health check found " .. tostring(#health.faults) .. " faults")
+  if laneCfg then
+    local health = self._hal:checkMaintenanceState(machine, laneCfg.transposerAddr, laneCfg.pull)
+    if health and health.faulted then
+      if self._logger then
+        self._logger:warn("PROCESSING: lane " .. laneId .. " health check found " .. tostring(#health.faults) .. " faults")
+      end
+      -- Log all detected faults
+      for _, fault in ipairs(health.faults) do
+        --self._reports[addr]:reportFault(fault.code, fault.description)
+        self._reports[laneId]:reportFault(fault.code, fault.description)
+      end
+      manifest:fault("Health check failed")
+      self._stats.jobsFaulted = self._stats.jobsFaulted + 1
+      active.phase = ExecBroker.PHASES.CLEANUP
+      return "fault"
     end
-    -- Log all detected faults
-    for _, fault in ipairs(health.faults) do
-      --self._reports[addr]:reportFault(fault.code, fault.description)
-      self._reports[laneId]:reportFault(fault.code, fault.description)
-    end
-    manifest:fault("Health check failed")
-    self._stats.jobsFaulted = self._stats.jobsFaulted + 1
-    active.phase = ExecBroker.PHASES.CLEANUP
-    return "fault"
   end
   if self._logger then
     self._logger:info(string.format("PROCESSING: lane %s is still processing (procTicks=%d, age=%d)",laneId, active._procTicks or 0, math.floor(manifest:age())))
@@ -989,9 +983,9 @@ function ExecBroker:_cleanupJob(laneId, active)
   local manifest = active.manifest
 
   -- 1. Extract leftover items from Machine Input Bus → Return Chest
-  local laneSides = active._laneSides
-  if laneSides and laneSides.transposerAddr and laneSides.inputSide and laneSides.returnSide then
-    local leftover = self._hal:drainInventory(laneSides.transposerAddr, laneSides.inputSide, laneSides.returnSide)
+  local laneCfg = self._machineTransposers[laneId]
+  if laneCfg and laneCfg.transposerAddr and laneCfg.push and laneCfg.return_ then
+    local leftover = self._hal:drainInventory(laneCfg.transposerAddr, laneCfg.push, laneCfg.return_)
     if leftover and leftover > 0 then
       if self._logger then
         self._logger:info(string.format(
@@ -1000,7 +994,7 @@ function ExecBroker:_cleanupJob(laneId, active)
       end
     end
   elseif self._logger then
-    self._logger:debug("CLEANUP: lane " .. laneId .. " no laneSides, skipping drain")
+    self._logger:debug("CLEANUP: lane " .. laneId .. " no transposer config, skipping drain")
   end
 
   -- 2. Release the machine

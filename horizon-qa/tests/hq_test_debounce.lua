@@ -78,7 +78,7 @@ os.epoch = function() return math.floor(mockUptime * 1000) end
 -- ===========================================================================
 -- Load BufferSnapshot (production module)
 -- ===========================================================================
-local BufferSnapshot = require("src.buffersnapshot")
+local BufferSnapshot = require("src.BufferSnapshot")
 
 -- ===========================================================================
 -- Helper: Simulate AE2 subnet central buffer contents

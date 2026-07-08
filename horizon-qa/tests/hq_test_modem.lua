@@ -96,7 +96,7 @@ os.epoch = function() return math.floor(mockUptime * 1000) end
 -- Pre-load modules for exec_broker safeRequire
 package.loaded["JobManifest"] = require("src.jobmanifest")
 package.loaded["MachineNode"] = MockModules.MachineNode
-package.loaded["BufferSnapshot"] = require("src.buffersnapshot")
+package.loaded["BufferSnapshot"] = require("src.BufferSnapshot")
 package.loaded["JobQueue"] = MockModules.JobQueue
 package.loaded["hardware_abstraction_layer"] = MockModules.HAL
 package.loaded["MaintenanceReport"] = MockModules.MaintenanceReport

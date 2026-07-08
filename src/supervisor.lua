@@ -632,7 +632,7 @@ if not package.loaded["src.supervisor"] then
     if not config then
       print("No config found. Running config UI first...")
       local ConfigUI = require("supervisor.config_ui")
-      local cfg = ConfigUI.run_or_wizard()
+      local cfg = ConfigUI.run_wizard()
       if cfg then
         ConfigUI.save_config(cfg)
         config = cfg

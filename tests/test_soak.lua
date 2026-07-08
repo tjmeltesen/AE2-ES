@@ -8,7 +8,7 @@ local MockEnv = require("tests.helpers.mock_env")
 MockEnv.setup()
 
 local JobManifest = require("src.jobmanifest")
-local BufferSnapshot = require("src.buffersnapshot")
+local BufferSnapshot = require("src.BufferSnapshot")
 
 -- ============================================================
 -- Test Group 1: 10K Micro-Jobs — Flat Memory

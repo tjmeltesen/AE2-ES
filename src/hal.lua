@@ -18,7 +18,6 @@ Used by:      Exec Broker main loop (A8), MachineNode (A2), MaintenanceReport (A
 ]]--
 
 local component = require("component")
-local sides = require("sides")
 
 local HAL = {}
 HAL.__index = HAL
@@ -59,21 +58,6 @@ HAL.FAULT_DISCONNECTED      = 7
 HAL.FAULT_PROXY_ERROR       = 8
 
 -- ===========================================================================
--- Default side mapping for logical roles
--- ===========================================================================
-local DEFAULT_SIDE_MAP = {
-  inputBus    = sides.north,     -- Where items come in (machine input bus)
-  inputHatch  = sides.west,      -- Where fluid comes in (machine input hatch)
-  interface   = sides.top,       -- Adjacent ME Interface
-  transposerInput  = sides.north,  -- Transposer pulls from drawer here
-  transposerOutput = sides.south,  -- Transposer drops into machine input bus
-  transposerReturn = sides.east,   -- Transposer pulls machine output → return chest
-  dualInterface = sides.north,   -- Transposer side facing Dual Interface
-  returnChest   = sides.east,    -- Transposer side facing Return Chest
-  fluidExport   = sides.north,   -- Interface side for fluid conduit
-}
-
--- ===========================================================================
 -- Known machine type -> capability mapping
 -- ===========================================================================
 local CAPABILITY_REGISTRY = {
@@ -88,24 +72,12 @@ local CAPABILITY_REGISTRY = {
 
 --- Create a new HardwareAbstractionLayer instance.
 -- @param overrides  optional table with keys:
---   sideMap       — table overriding DEFAULT_SIDE_MAP role->side mappings
 --   cacheTTL      — number, seconds before auto-refreshing a cached proxy (default 300)
 --   capabilityMap — table mapping machineType string to capability flags
 -- @return HAL instance
 function HAL:new(overrides)
   overrides = overrides or {}
   local self = setmetatable({}, HAL)
-
-  -- Side resolution map (merge defaults with overrides)
-  self._sideMap = {}
-  for role, side in pairs(DEFAULT_SIDE_MAP) do
-    self._sideMap[role] = side
-  end
-  if overrides.sideMap then
-    for role, side in pairs(overrides.sideMap) do
-      self._sideMap[role] = side
-    end
-  end
 
   -- Component proxy cache: address -> { proxy, timestamp }
   self._proxyCache   = {}
@@ -235,28 +207,6 @@ end
 -- ===========================================================================
 -- Side resolution
 -- ===========================================================================
-
---- Resolve a logical role name to a side constant.
--- @param role  string — one of "inputBus", "inputHatch",
---              "itemBuffer", "fluidBuffer", "transposerInput", "transposerOutput",
---              "transposerReturn"
--- @return number (side constant) or nil if role unknown
-function HAL:resolveSide(role)
-  local side = self._sideMap[role]
-  if side == nil then
-    self._lastError = "HAL:resolveSide() — unknown role '" .. tostring(role) .. "'"
-    return nil
-  end
-  return side
-end
-
---- Update the side mapping for a specific role at runtime.
--- @param role  string
--- @param side  number (side constant)
-function HAL:setSideMapping(role, side)
-  self._sideMap[role] = side
-  return true
-end
 
 -- ===========================================================================
 -- Inventory transfer operations (performInventoryTransfer)
@@ -1209,5 +1159,50 @@ function HAL:returnLeftovers(transposerAddress, returnSide, pullSide, slotsArray
   
   return true
 end
+
+---Sets the strength of the redstone signal to emit on a specific side.
+---@param side integer # The side to set the output on.
+---@param value integer # The value to output on the specified side.
+---@param redstoneLockAddress string # The address of the redstone lock to set the output on.
+---@return boolean, error string
+function HAL:setRedstoneLock(redstoneLockAddress, side, value)
+  self:clearError()
+  local redstoneLock = self:getProxy(redstoneLockAddress)
+  if not redstoneLock then
+    self._lastError = "HAL:setRedstoneLock() — redstoneLock not available"
+    return false, self._lastError
+  end
+  
+  local ok, err = pcall(redstoneLock.setOutput, side, value)
+  if not ok then
+    self._lastError = "HAL:setRedstoneLock() — redstoneLock.setOutput failed: " .. tostring(err)
+    return false, self._lastError
+  end
+  return true, nil
+end
+
+---Sets the strength of the redstone signal to emit on a specific side.
+--- From High to Low
+---@param redstoneLockAddress string # The address of the redstone lock to set the output on.
+---@param side integer # The side to set the output on.
+---@param pulseDuration number # The time in seconds a single pulse will last.
+---@return boolean
+function HAL:pulseRedstoneLock(redstoneLockAddress, side, pulseDuration)
+  self:clearError()
+
+  local ok, err = self:setRedstoneLock(redstoneLockAddress, side, 15)
+  if not ok then
+    self._lastError = "HAL:pulseRedstoneLock() — redstoneLock.setOutput failed: " .. tostring(err)
+    return false, self._lastError
+  end
+  os.sleep(pulseDuration)
+  ok, err = self:setRedstoneLock(redstoneLockAddress, side, 0)
+  if not ok then
+    self._lastError = "HAL:pulseRedstoneLock() — redstoneLock.setOutput failed: " .. tostring(err)
+    return false, self._lastError
+  end
+  return true, nil
+end
+
 
 return HAL

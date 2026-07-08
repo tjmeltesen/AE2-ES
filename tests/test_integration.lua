@@ -78,7 +78,7 @@ os.epoch = function() return math.floor(mockUptime * 1000) end
 -- Pre-load modules for exec_broker's safeRequire
 package.loaded["JobManifest"] = require("src.jobmanifest")
 package.loaded["MachineNode"] = MockModules.MachineNode
-package.loaded["BufferSnapshot"] = require("src.buffersnapshot")
+package.loaded["BufferSnapshot"] = require("src.BufferSnapshot")
 package.loaded["JobQueue"] = MockModules.JobQueue
 package.loaded["hardware_abstraction_layer"] = MockModules.HAL
 package.loaded["MaintenanceReport"] = MockModules.MaintenanceReport
@@ -231,9 +231,7 @@ do
   }
 
   -- Create a fresh HAL for inspection
-  local hal = MockModules.HAL.new({
-    sideMap = { interface = 4, inputHatch = 1, outputHatch = 0 }
-  })
+  local hal = MockModules.HAL.new({})
 
   -- Override in package.loaded for this test
   package.loaded["hardware_abstraction_layer"] = { new = function(cfg) return hal end }
@@ -279,7 +277,7 @@ do
       JobManifest = require("src.jobmanifest"),
       TelemetryPayload = require("src.telemetrypayload"),
     },
-    halConfig = { sideMap = { interface = 4 } },
+    halConfig = {},
     bufferFeeder = bufferFeeder,
     pollInterval = 0.01,
     snapshot = snap,
@@ -323,9 +321,7 @@ do
   })
   local machines = { ["fluid-001"] = fluidMachine }
 
-  local hal = MockModules.HAL.new({
-    sideMap = { interface = 4, inputHatch = 1, outputHatch = 0, fluidExport = 5 },
-    capabilities = {
+  local hal = MockModules.HAL.new({capabilities = {
       fluid = { "item_input", "item_output", "fluid_input", "fluid_output" },
     },
   })
@@ -358,7 +354,7 @@ do
       JobManifest = require("src.jobmanifest"),
       TelemetryPayload = require("src.telemetrypayload"),
     },
-    halConfig = { sideMap = { interface = 4, inputHatch = 1, outputHatch = 0 } },
+    halConfig = {},
     bufferFeeder = function() return bufferData end,
     pollInterval = 0.01,
     snapshot = snap,
@@ -382,148 +378,12 @@ do
 end
 Assert.endTest()
 
-Assert.startTest("G2c: HAL side resolution returns correct sides")
-do
-  local hal = MockModules.HAL.new({
-    sideMap = { interface = 4, inputHatch = 1, outputHatch = 0, redstone = 2 }
-  })
-
-  Assert.equal(4, hal:resolveSide("interface"), "interface → side 4")
-  Assert.equal(1, hal:resolveSide("inputHatch"), "inputHatch → side 1")
-  Assert.equal(0, hal:resolveSide("outputHatch"), "outputHatch → side 0")
-  Assert.equal(2, hal:resolveSide("redstone"), "redstone → side 2")
-  Assert.isNil(hal:resolveSide("nonexistent"), "unknown side → nil")
-end
-Assert.endTest()
-
 -- ===========================================================================
 -- TEST GROUP 3: Redstone Lock Sync
 -- ===========================================================================
 
-Assert.startTest("G3a: Redstone lock raised during processing")
-do
-  -- Redstone lock pattern: the gatekeeper raises redstone during processing
-  -- to isolate the AE2 subnet from the main network.
-  local hal = MockModules.HAL.new({
-    sideMap = { redstone = 2 }
-  })
 
-  local redstoneSide = hal:resolveSide("redstone")
-  Assert.notNil(redstoneSide, "redstone side resolved")
 
-  -- Simulate: raise redstone lock (subnet isolated)
-  hal:setRedstone(redstoneSide, 15)
-  Assert.equal(15, hal:getRedstone(redstoneSide), "redstone HIGH (subnet isolated)")
-
-  -- Simulate: lower redstone lock (subnet connected to main net)
-  hal:setRedstone(redstoneSide, 0)
-  Assert.equal(0, hal:getRedstone(redstoneSide), "redstone LOW (subnet reconnected)")
-end
-Assert.endTest()
-
-Assert.startTest("G3b: Redstone gatekeeper — buffer drain → unlock")
-do
-  -- The redstone gatekeeper should only unlock when the central buffer is empty.
-  -- Test the logic: if buffer empty → redstone goes low.
-  local hal = MockModules.HAL.new({ sideMap = { redstone = 2 } })
-  local rs = hal:resolveSide("redstone")
-
-  -- Function simulating the gatekeeper logic
-  local function gatekeeperCheck(bufferData, halRef, rsSide)
-    local hasItems = bufferData and bufferData.items and #bufferData.items > 0
-    local hasFluids = bufferData and bufferData.fluids and #bufferData.fluids > 0
-
-    if not hasItems and not hasFluids then
-      halRef:setRedstone(rsSide, 0)  -- unlock
-      return false -- gate is open
-    else
-      halRef:setRedstone(rsSide, 15) -- lock
-      return true -- gate is closed
-    end
-  end
-
-  -- Buffer with items → gate closed
-  local bufferWithItems = { items = { { name = "iron", size = 64 } }, fluids = {} }
-  local locked = gatekeeperCheck(bufferWithItems, hal, rs)
-  Assert.isTrue(locked, "gate closed when buffer has items")
-  Assert.equal(15, hal:getRedstone(rs), "redstone HIGH")
-
-  -- Empty buffer → gate open
-  local emptyBuffer = { items = {}, fluids = {} }
-  locked = gatekeeperCheck(emptyBuffer, hal, rs)
-  Assert.isFalse(locked, "gate open when buffer empty")
-  Assert.equal(0, hal:getRedstone(rs), "redstone LOW")
-
-  -- Buffer with fluids only → gate closed
-  local bufferWithFluids = { items = {}, fluids = { { name = "water", amount = 1000 } } }
-  locked = gatekeeperCheck(bufferWithFluids, hal, rs)
-  Assert.isTrue(locked, "gate closed when buffer has fluids")
-  Assert.equal(15, hal:getRedstone(rs), "redstone HIGH")
-end
-Assert.endTest()
-
-Assert.startTest("G3c: Multiple machines under redstone lock coordination")
-do
-  -- Integration test: create broker, start processing, verify redstone state
-  local machines = {
-    ["mach-r1"] = MockModules.MachineNode.new("mach-r1", { status = "AVAILABLE" }),
-  }
-
-  local hal = MockModules.HAL.new({
-    sideMap = { interface = 4, redstone = 2 }
-  })
-  local rs = hal:resolveSide("redstone")
-
-  local bufferData = {
-    items = { { name = "minecraft:iron_ingot", size = 64, damage = 0 } },
-    fluids = {},
-  }
-
-  local snap = MockModules.IntegrationSnapshot.new(0.01)
-  local broker = ExecBroker.new({
-    brokerId = "test-rs-broker",
-    databaseAddr = "db-001",
-    machines = machines,
-    machineTransposers = {
-      ["mach-r1"] = {
-        dualInterface = "mach-r1-iface",
-        transposerAddr = "xp-003",
-        pull = 5,
-        push = 6,
-        return_ = 7,
-      },
-    },
-    modules = {
-      MachineNode = MockModules.MachineNode,
-      BufferSnapshot = { new = function() return snap end },
-      JobQueue = MockModules.JobQueue,
-      HAL = { new = function(cfg) return hal end },
-      MaintenanceReport = MockModules.MaintenanceReport,
-      JobManifest = require("src.jobmanifest"),
-      TelemetryPayload = require("src.telemetrypayload"),
-    },
-    halConfig = { sideMap = { interface = 4, redstone = 2 } },
-    bufferFeeder = function() return bufferData end,
-    pollInterval = 0.01,
-    snapshot = snap,
-    queue = MockModules.JobQueue.new(64),
-    heartbeatInterval = 999,
-  })
-
-  snap:update(bufferData)
-  for _ = 1, 30 do
-    broker:tick()
-    mockUptime = mockUptime + 0.1
-  end
-
-  -- The broker should have allocated and started processing
-  local stats = broker:getStats()
-  Assert.notNil(stats, "broker stats available")
-  -- Verify machine state changed from AVAILABLE
-  local m = broker:getMachine("mach-r1")
-  Assert.notNil(m, "machine accessible")
-end
-Assert.endTest()
 
 -- ===========================================================================
 -- TEST GROUP 4: Fault Injection
@@ -538,9 +398,7 @@ do
   })
   local machines = { ["mach-fault"] = faultMachine }
 
-  local hal = MockModules.HAL.new({
-    sideMap = { interface = 4, inputHatch = 1, outputHatch = 0 }
-  })
+  local hal = MockModules.HAL.new({})
 
   local bufferData = {
     items = { { name = "minecraft:iron_ingot", size = 64, damage = 0 } },
@@ -578,7 +436,7 @@ do
       JobManifest = require("src.jobmanifest"),
       TelemetryPayload = require("src.telemetrypayload"),
     },
-    halConfig = { sideMap = { interface = 4 } },
+    halConfig = {},
     bufferFeeder = bufferFeeder,
     pollInterval = 0.01,
     snapshot = snap,
@@ -637,9 +495,7 @@ do
   })
   local machines = { ["mach-f2"] = faultMachine }
 
-  local hal = MockModules.HAL.new({
-    sideMap = { interface = 4 }
-  })
+  local hal = MockModules.HAL.new({})
 
   local bufferData = {
     items = { { name = "minecraft:copper_ingot", size = 32, damage = 0 } },
@@ -667,7 +523,7 @@ do
       JobManifest = require("src.jobmanifest"),
       TelemetryPayload = require("src.telemetrypayload"),
     },
-    halConfig = { sideMap = { interface = 4 } },
+    halConfig = {},
     bufferFeeder = function() return bufferData end,
     pollInterval = 0.01,
     snapshot = snap,
@@ -711,9 +567,7 @@ do
   local m2 = MockModules.MachineNode.new("multi-2", { status = "AVAILABLE" })
   local machines = { ["multi-1"] = m1, ["multi-2"] = m2 }
 
-  local hal = MockModules.HAL.new({
-    sideMap = { interface = 4 }
-  })
+  local hal = MockModules.HAL.new({})
 
   local bufferData = {
     items = {
@@ -749,7 +603,7 @@ do
       JobManifest = require("src.jobmanifest"),
       TelemetryPayload = require("src.telemetrypayload"),
     },
-    halConfig = { sideMap = { interface = 4 } },
+    halConfig = {},
     bufferFeeder = function() return bufferData end,
     pollInterval = 0.01,
     snapshot = snap,

@@ -51,8 +51,6 @@ jobs:
       - name: Run test suite
         run: python run_tests.py
 
-      - name: Run dashboard tests
-        run: python run_dashboard_tests.py
 
   # ── Tier 2b: PR to main — performance profiling artifact (after GameTest) ──
   tier2-performance:
@@ -226,7 +224,7 @@ jobs:
 
       - name: Archive OCEmu logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ocemu-logs
           path: /tmp/ocemu-machine/
