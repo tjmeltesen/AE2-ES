@@ -56,6 +56,9 @@ HAL.FAULT_NO_RECIPE         = 5
 HAL.FAULT_OVERFLOW          = 6
 HAL.FAULT_DISCONNECTED      = 7
 HAL.FAULT_PROXY_ERROR       = 8
+HAL.FAULT_NEEDS_MAINTENANCE = 9   -- Maintenance hatch requires attention
+HAL.FAULT_HAS_PROBLEMS      = 10  -- Machine reports "Has Problems"
+HAL.FAULT_INCOMPLETE_STRUCT = 11  -- Multiblock structure incomplete
 
 -- ===========================================================================
 -- Known machine type -> capability mapping
@@ -463,6 +466,51 @@ end
 -- Maintenance state checking (checkMaintenanceState)
 -- ===========================================================================
 
+--- Safely parse getStoredEUString() output into a number.
+-- GTNH batteries (LSC, etc.) can exceed 2^32 EU; getStoredEU() overflows.
+-- getStoredEUString() returns a decimal string. Lua 5.3 double-precision
+-- floats represent integers exactly up to 2^53 — more than enough.
+-- @param euString  string  raw EU value as string (e.g. "12345678901234567890")
+-- @return number|nil  parsed EU value, or nil if unparseable
+local function parseEUString(euString)
+  if euString == nil or euString == "" then return nil end
+  -- Strip commas and underscores (common in large-number formatting)
+  local cleaned = euString:gsub("[,%s_]", "")
+  return tonumber(cleaned)
+end
+
+--- Parse getSensorInformation() lines for known GT machine error states.
+-- Uses plain-text matching (no regex) for reliability against arbitrary
+-- sensor output. Modifies the result table in place.
+-- @param sensorLines  table|nil  string array from getSensorInformation()
+-- @param result       table      health result table to populate
+-- @return number  count of issues found (0 if sensorLines is nil/empty)
+local function parseSensorLines(sensorLines, result)
+  if type(sensorLines) ~= "table" then return 0 end
+  local count = 0
+  for _, line in ipairs(sensorLines) do
+    if type(line) == "string" then
+      if line:find("Shut down due to power loss", 1, true) then
+        result.powerLossShutdown = true
+        count = count + 1
+      end
+      if line:find("Maintenance", 1, true) then
+        result.needsMaintenance = true
+        count = count + 1
+      end
+      if line:find("Has Problems", 1, true) then
+        result.hasProblems = true
+        count = count + 1
+      end
+      if line:find("Incomplete Structure", 1, true) then
+        result.incompleteStructure = true
+        count = count + 1
+      end
+    end
+  end
+  return count
+end
+
 --- Poll a machine's GT hardware via HAL's proxy cache and push state into
 -- the MachineNode. Owns all hardware I/O — MachineNode never touches components.
 -- @param machineNode  MachineNode instance
@@ -516,6 +564,20 @@ function HAL:pollMachineHardware(machineNode)
   result.maxProgress = maxProgress or 0
   result.hasWork     = hasWork or false
 
+  -- Read sensor, power, and identity data (per-call pcall for resilience)
+  local sensorLines, euString, euCapacity, workAllowed, machineName
+  pcall(function() sensorLines = proxy.getSensorInformation() end)
+  pcall(function() euString    = proxy.getStoredEUString() end)
+  pcall(function() euCapacity  = proxy.getEUMaxStored() end)
+  pcall(function() workAllowed = proxy.isWorkAllowed() end)
+  pcall(function() machineName = proxy.getName() end)
+
+  result.sensorLines    = sensorLines
+  result.eu             = parseEUString(euString)
+  result.euCapacity     = euCapacity or 0
+  result.workAllowed    = workAllowed
+  result.machineName    = machineName or "unknown"
+
   -- Push progress into MachineNode
   machineNode:updateHardwareState(result.progress)
 
@@ -537,35 +599,32 @@ function HAL:pollMachineHardware(machineNode)
 end
 
 --- Perform a comprehensive maintenance check on a machine.
--- Polls hardware via pollMachineHardware, then maps results to a structured
--- health report.
---
--- The check covers:
---   - Power status (EU starvation)
---   - Item jams (hasWork but not active)
---   - Ghost items in the ME interface
---   - Overall machine fault state
---
+-- Updated doc comment
 -- @param machineNode   MachineNode instance (from A2)
+-- @param transposerAddr  string  optional transposer address for ghost check
+-- @param ifaceSide     number  optional side for ghost check
 -- @return table with keys:
---   faulted      — boolean, true if any fault detected
---   faults       — table array of {code, label, description} for each fault
---   healthScore  — number 0–100 (100 = perfect)
---   powerOk      — boolean
---   progressOk   — boolean
---   ghostItems   — number of ghost items found (0 if clean)
---   recommendations — string array of suggested actions
+--   faulted, faults, healthScore, powerOk, progressOk, ghostItems,
+--   recommendations, machineName, powerPercentage, errorType,
+--   needsMaintenance, hasProblems, incompleteStructure
 function HAL:checkMaintenanceState(machineNode, transposerAddr, ifaceSide)
   self:clearError()
 
   local result = {
-    faulted         = false,
-    faults          = {},
-    healthScore     = 100,
-    powerOk         = true,
-    progressOk      = true,
-    ghostItems      = 0,
-    recommendations = {},
+    faulted              = false,
+    faults               = {},
+    healthScore          = 100,
+    powerOk              = true,
+    progressOk           = true,
+    ghostItems           = 0,
+    recommendations      = {},
+    machineName          = "unknown",
+    powerPercentage      = nil,
+    errorType            = nil,
+    needsMaintenance     = false,
+    hasProblems          = false,
+    incompleteStructure  = false,
+    powerLossShutdown    = false,
   }
 
   if not machineNode then
@@ -576,47 +635,112 @@ function HAL:checkMaintenanceState(machineNode, transposerAddr, ifaceSide)
     })
     result.faulted     = true
     result.healthScore = 0
+    result.errorType   = "disconnected"
     return result
   end
 
   -- Get capabilities for this machine type
   local capabilities = self:getCapabilities(machineNode.machineType)
 
-  -- Phase 1: Poll hardware through HAL (not MachineNode)
+  -- Poll hardware through HAL (not MachineNode)
   local hardwareState = self:pollMachineHardware(machineNode)
+  result.machineName = hardwareState.machineName or "unknown"
   local hasPowerCap = self:hasCapability(machineNode.machineType, HAL.CAP_POWER_EU)
                     or self:hasCapability(machineNode.machineType, HAL.CAP_POWER_STEAM)
 
-  if hasPowerCap then
-    if hardwareState.faulted then
-      result.powerOk = false
-      result.healthScore = result.healthScore - 30
+  -- =========================================================================
+  -- Phase 1: Parse sensor lines for structural / maintenance issues
+  -- =========================================================================
+  parseSensorLines(hardwareState.sensorLines, result)
 
-      if hardwareState.euCapacity and hardwareState.euCapacity > 0
-         and hardwareState.eu < (hardwareState.euCapacity * 0.05) then
+  if result.powerLossShutdown then
+    result.healthScore = result.healthScore - 50
+    table.insert(result.faults, {
+      code        = HAL.FAULT_POWER_STARVATION,
+      label       = "Power Loss Shutdown",
+      description = "Machine shut down due to power loss — EU drained during operation",
+    })
+    table.insert(result.recommendations,
+      "Increase EU supply; machine lost power mid-recipe and may have voided inputs")
+    result.powerOk = false
+    result.errorType = "power_loss_shutdown"
+  end
+
+  if result.incompleteStructure then
+    result.healthScore = result.healthScore - 40
+    table.insert(result.faults, {
+      code        = HAL.FAULT_INCOMPLETE_STRUCT,
+      label       = "Incomplete Structure",
+      description = "Multiblock structure is incomplete — machine cannot run",
+    })
+    table.insert(result.recommendations,
+      "Verify multiblock structure is complete; check all hatches and casings")
+    result.errorType = "incomplete_structure"
+  end
+
+  if result.needsMaintenance then
+    result.healthScore = result.healthScore - 20
+    table.insert(result.faults, {
+      code        = HAL.FAULT_NEEDS_MAINTENANCE,
+      label       = "Maintenance Required",
+      description = "Maintenance hatch requires attention",
+    })
+    table.insert(result.recommendations,
+      "Perform maintenance on machine with appropriate tools")
+    if not result.errorType then result.errorType = "needs_maintenance" end
+  end
+
+  if result.hasProblems then
+    result.healthScore = result.healthScore - 15
+    table.insert(result.faults, {
+      code        = HAL.FAULT_HAS_PROBLEMS,
+      label       = "Machine Has Problems",
+      description = "Machine reports unresolved problems",
+    })
+    table.insert(result.recommendations,
+      "Inspect machine GUI for specific problem details; resolve before resuming")
+    if not result.errorType then result.errorType = "has_problems" end
+  end
+
+  -- =========================================================================
+  -- Phase 2: Power starvation detection (real EU data from hardware)
+  -- =========================================================================
+  if hasPowerCap then
+    local eu = hardwareState.eu
+    local euCap = hardwareState.euCapacity
+    if eu and euCap and euCap > 0 then
+      local pct = eu / euCap
+      result.powerPercentage = math.floor(pct * 100)
+      if pct < 0.05 and hardwareState.active then
+        result.powerOk = false
+        result.healthScore = result.healthScore - 30
         table.insert(result.faults, {
           code        = HAL.FAULT_POWER_STARVATION,
           label       = "Power Starvation",
-          description = "EU reserve is critically low: "
-                         .. tostring(hardwareState.eu) .. " / "
-                         .. tostring(hardwareState.euCapacity),
+          description = string.format("EU at %.1f%% (%s / %s) while active",
+            pct * 100, tostring(eu), tostring(euCap)),
         })
         table.insert(result.recommendations,
-          "Check EU supply to machine; provide more power or reduce load")
-      else
-        -- Generic hardware fault
-        table.insert(result.faults, {
-          code        = HAL.FAULT_PROXY_ERROR,
-          label       = "Hardware Error",
-          description = hardwareState.faultReason or "Unknown hardware error",
-        })
-        table.insert(result.recommendations,
-          "Inspect machine: " .. (hardwareState.name or "unknown"))
+          "EU reserve critically low (< 5%); pulse redstone lock to halt input bus")
+        if not result.errorType then result.errorType = "power_starvation" end
       end
+    elseif hardwareState.faulted then
+      -- Proxy-level fault (no EU data available)
+      result.powerOk = false
+      result.healthScore = result.healthScore - 30
+      table.insert(result.faults, {
+        code        = HAL.FAULT_PROXY_ERROR,
+        label       = "Hardware Error",
+        description = hardwareState.faultReason or "Unknown hardware error",
+      })
+      table.insert(result.recommendations,
+        "Inspect machine: " .. (hardwareState.machineName or "unknown"))
     end
   end
 
-  -- Phase 2: Check for item jams (hasWork but not active)
+  -- =========================================================================
+  -- Phase 3: Check for item jams (hasWork but not active)
+  -- =========================================================================
   if hardwareState.hasWork and not hardwareState.active then
     result.healthScore = result.healthScore - 25
     table.insert(result.faults, {
@@ -626,9 +750,12 @@ function HAL:checkMaintenanceState(machineNode, transposerAddr, ifaceSide)
     })
     table.insert(result.recommendations,
       "Check machine output bus for blockages; ensure input items/fluids are present")
+    if not result.errorType then result.errorType = "item_jam" end
   end
 
-  -- Phase 3: Check for ghost items in the ME interface
+  -- =========================================================================
+  -- Phase 4: Check for ghost items in the ME interface
+  -- =========================================================================
   if transposerAddr and ifaceSide then
     local transposer, tErr = self:getProxy(transposerAddr)
     if transposer then
@@ -664,7 +791,9 @@ function HAL:checkMaintenanceState(machineNode, transposerAddr, ifaceSide)
     end
   end
 
-  -- Phase 4: Check machine status flag from MachineNode
+  -- =========================================================================
+  -- Phase 5: Check machine status flag from MachineNode
+  -- =========================================================================
   if machineNode:isFaulted() then
     result.healthScore = result.healthScore - 20
     if #result.faults == 0 then
@@ -676,6 +805,7 @@ function HAL:checkMaintenanceState(machineNode, transposerAddr, ifaceSide)
       table.insert(result.recommendations,
         "Check machine for hardware or software faults; consider maintenance cycle")
     end
+    if not result.errorType then result.errorType = "machine_faulted" end
   end
 
   -- Clamp health score
@@ -814,7 +944,10 @@ function HAL:faultToString(faultCode)
     [HAL.FAULT_NO_RECIPE]        = "No Recipe",
     [HAL.FAULT_OVERFLOW]         = "Overflow",
     [HAL.FAULT_DISCONNECTED]     = "Disconnected",
-    [HAL.FAULT_PROXY_ERROR]      = "Proxy Error",
+    [HAL.FAULT_PROXY_ERROR]       = "Proxy Error",
+    [HAL.FAULT_NEEDS_MAINTENANCE]  = "Needs Maintenance",
+    [HAL.FAULT_HAS_PROBLEMS]       = "Has Problems",
+    [HAL.FAULT_INCOMPLETE_STRUCT]  = "Incomplete Structure",
   }
   return labels[faultCode] or "Unknown (" .. tostring(faultCode) .. ")"
 end

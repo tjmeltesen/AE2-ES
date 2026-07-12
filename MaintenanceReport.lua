@@ -128,6 +128,30 @@ FAULT_REGISTRY[8] = {
   guidance     = "Restart OC computer or re-connect component; check for mod conflicts",
 }
 
+-- 9: Needs Maintenance
+FAULT_REGISTRY[9] = {
+  severity     = MaintenanceReport.SEVERITY.WARNING,
+  message      = "Needs Maintenance — maintenance hatch requires attention",
+  isRepairable = true,
+  guidance     = "Perform maintenance on machine with appropriate tools (screwdriver, hammer, etc.)",
+}
+
+-- 10: Has Problems
+FAULT_REGISTRY[10] = {
+  severity     = MaintenanceReport.SEVERITY.WARNING,
+  message      = "Has Problems — machine reports unresolved problem state",
+  isRepairable = true,
+  guidance     = "Inspect machine GUI for specific problem details; resolve before resuming",
+}
+
+-- 11: Incomplete Structure
+FAULT_REGISTRY[11] = {
+  severity     = MaintenanceReport.SEVERITY.CRITICAL,
+  message      = "Incomplete Structure — multiblock structure is missing required blocks",
+  isRepairable = true,
+  guidance     = "Verify all hatches, casings, and structural blocks are correctly placed",
+}
+
 -- Maximum entries in the history log before auto-trim
 local DEFAULT_MAX_HISTORY = 100
 
@@ -161,7 +185,7 @@ end
 -- Fault code 0 returns just the message (no severity bracket).
 -- Unknown fault codes return a descriptive fallback.
 --
--- @param faultCode  number — one of the FAULT_* values (0–8)
+-- @param faultCode  number — one of the FAULT_* values (0–11)
 -- @return string  e.g. "[CRITICAL] Power Starvation — EU supply critically low"
 --                 or   "No Fault — machine operating normally"
 function MaintenanceReport:toHumanReadable(faultCode)

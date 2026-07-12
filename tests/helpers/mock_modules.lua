@@ -221,7 +221,7 @@ function MockModules.HAL:pollMachineHardware(machineNode)
   if machineNode.updateHardwareState then
     machineNode:updateHardwareState(active and 45 or 0)
   end
-  return { active = active, progress = active and 45 or 0, maxProgress = 100, hasWork = active, faulted = faulted, faultReason = faulted and "mock fault" or nil, name = machineNode.machineType or "gt_machine", eu = nil, euCapacity = nil }
+  return { active = active, progress = active and 45 or 0, maxProgress = 100, hasWork = active, faulted = faulted, faultReason = faulted and "mock fault" or nil, name = machineNode.machineType or "gt_machine", eu = 1000000, euCapacity = 10000000, sensorLines = {}, workAllowed = true, machineName = "mock_gt_machine" }
 end
 
 function MockModules.HAL:drainInventory(transposerAddress, fromSide, toSide)
@@ -313,10 +313,37 @@ function MockModules.HAL:checkMaintenanceState(machine, transposerAddr, ifaceSid
   if machine._faulted then
     return {
       faulted = true,
-      faults = { { code = machine._faultCode or 500, description = machine._faultDesc or "Machine faulted" } }
+      faults = { { code = machine._faultCode or 500, description = machine._faultDesc or "Machine faulted" } },
+      healthScore = 50,
+      powerOk = true,
+      progressOk = false,
+      ghostItems = 0,
+      recommendations = { "Inspect machine" },
+      machineName = "mock_gt_machine",
+      powerPercentage = 100,
+      errorType = "machine_faulted",
+      needsMaintenance = false,
+      hasProblems = false,
+      incompleteStructure = false,
+      powerLossShutdown = false,
     }
   end
-  return { faulted = false, faults = {} }
+  return {
+    faulted = false,
+    faults = {},
+    healthScore = 100,
+    powerOk = true,
+    progressOk = true,
+    ghostItems = 0,
+    recommendations = {},
+    machineName = "mock_gt_machine",
+    powerPercentage = 100,
+    errorType = nil,
+    needsMaintenance = false,
+    hasProblems = false,
+    incompleteStructure = false,
+    powerLossShutdown = false,
+  }
 end
 
 function MockModules.HAL:setRedstone(side, value)

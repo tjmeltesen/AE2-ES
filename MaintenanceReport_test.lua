@@ -99,6 +99,9 @@ local function runTests()
       {code = 6, expect = "Overflow"},
       {code = 7, expect = "Disconnected"},
       {code = 8, expect = "Proxy Error"},
+      {code = 9, expect = "Needs Maintenance"},
+      {code = 10, expect = "Has Problems"},
+      {code = 11, expect = "Incomplete Structure"},
     }
     local mr = MaintenanceReport.new("test")
     for _, c in ipairs(cases) do
