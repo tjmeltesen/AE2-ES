@@ -19,11 +19,6 @@ local function test(name, fn)
   end
 end
 
--- Suppress entry points to prevent interactive wizard from blocking
-package.loaded["src.config_ui"] = true
-package.loaded["src.exec_broker"] = true
-package.loaded["src.supervisor"] = true
-
 io.write("=== AE2-ES OCEmu Test Suite ===\n\n")
 
 -- ===========================================================================
@@ -32,22 +27,18 @@ io.write("=== AE2-ES OCEmu Test Suite ===\n\n")
 io.write("--- Group 1: Module Loading ---\n")
 
 test("config_ui module loads", function()
-  package.loaded["src.config_ui"] = nil
   package.loaded["home.src.config_ui"] = nil
   local mod = require("home.src.config_ui")
   assert(type(mod) == "table", "not a table")
   assert(type(mod.CONFIG_PATH) == "string", "missing CONFIG_PATH")
   assert(mod.new ~= nil, "no new() constructor")
-  package.loaded["src.config_ui"] = true
 end)
 
 test("exec_broker module loads", function()
-  package.loaded["src.exec_broker"] = nil
   local mod = require("home.src.exec_broker")
   assert(type(mod) == "table", "not a table")
   assert(type(mod.PHASES) == "table", "missing PHASES")
   assert(mod.PHASES.BUFFERING ~= nil, "missing BUFFERING phase")
-  package.loaded["src.exec_broker"] = true
 end)
 
 test("hal loads and constructs", function()
@@ -58,10 +49,8 @@ test("hal loads and constructs", function()
 end)
 
 test("supervisor module loads", function()
-  package.loaded["src.supervisor"] = nil
   local mod = require("home.src.supervisor")
   assert(type(mod) == "table", "not a table")
-  package.loaded["src.supervisor"] = true
 end)
 
 test("log modules load", function()
@@ -127,7 +116,6 @@ end)
 io.write("\n--- Group 3: Config Save/Load ---\n")
 
 test("config_ui saveConfig creates file", function()
-  package.loaded["src.config_ui"] = nil
   package.loaded["home.src.config_ui"] = nil
   local ConfigUI = require("home.src.config_ui")
   ConfigUI.CONFIG_PATH = "/tmp/ae2es_broker_test.cfg"
@@ -163,11 +151,9 @@ test("config_ui saveConfig creates file", function()
   assert(#content > 0, "config file empty")
   -- Verify it looks like valid Lua (starts with return)
   assert(content:find("return") == 1, "config not valid Lua return block")
-  package.loaded["src.config_ui"] = true
 end)
 
 test("config_ui loadConfig reads back", function()
-  package.loaded["src.config_ui"] = nil
   package.loaded["home.src.config_ui"] = nil
   local ConfigUI = require("home.src.config_ui")
   local ui = ConfigUI.new("/tmp/ae2es_broker_test.cfg")
@@ -179,7 +165,6 @@ test("config_ui loadConfig reads back", function()
   else
     assert(type(ok) == "boolean" or type(cfg) == "string", "unexpected error format")
   end
-  package.loaded["src.config_ui"] = true
 end)
 
 -- ===========================================================================
@@ -188,7 +173,6 @@ end)
 io.write("\n--- Group 4: Exec Broker Construction ---\n")
 
 test("exec_broker constructs with lane config", function()
-  package.loaded["src.exec_broker"] = nil
   local ExecBroker = require("home.src.exec_broker")
   local broker = ExecBroker.new({
     brokerId = "test-ocemu-broker",
@@ -205,11 +189,9 @@ test("exec_broker constructs with lane config", function()
   assert(type(broker) == "table", "broker not created")
   assert(type(broker.getPhase) == "function", "getPhase missing")
   assert(broker:getPhase() == ExecBroker.PHASES.BUFFERING, "wrong phase")
-  package.loaded["src.exec_broker"] = true
 end)
 
 test("exec_broker tick runs", function()
-  package.loaded["src.exec_broker"] = nil
   local ExecBroker = require("home.src.exec_broker")
   local broker = ExecBroker.new({
     brokerId = "test-tick-broker",
@@ -225,11 +207,9 @@ test("exec_broker tick runs", function()
     assert(broker:tick(), "tick failed")
   end
   ExecBroker._clockOverride = nil
-  package.loaded["src.exec_broker"] = true
 end)
 
 test("exec_broker stats updated after ticks", function()
-  package.loaded["src.exec_broker"] = nil
   local ExecBroker = require("home.src.exec_broker")
   local broker = ExecBroker.new({
     brokerId = "test-stats-broker",
@@ -245,7 +225,6 @@ test("exec_broker stats updated after ticks", function()
   local stats = broker:getStats()
   assert(type(stats) == "table", "stats not a table")
   ExecBroker._clockOverride = nil
-  package.loaded["src.exec_broker"] = true
 end)
 
 -- ===========================================================================

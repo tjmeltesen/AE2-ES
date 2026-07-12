@@ -20,15 +20,11 @@
 --   D         — dismiss resolved alerts
 --   Q         — quit (return to OS)
 --
--- Dependencies (soft-load via pcall):
---   B1 — supervisor.modem_subscriber (ModemSubscriber)
---   B2 — supervisor.machine_matrix  (GlobalMachineMatrix)
---   B3 — supervisor.ttd_tracker     (TTDTracker)
---   B4 — supervisor.alerts           (AlertManager)
---
--- All four modules are loaded with pcall(require) and fall back to inline
--- stubs that return empty/zero data, so the dashboard is functional even
--- when a downstream module hasn't been implemented yet.
+-- Dependencies are injected explicitly by the composition root:
+--   subscriber — canonical src.supervisor instance
+--   matrix     — GlobalMachineMatrix implementation
+--   ttd        — TTDTracker implementation
+--   alerts     — AlertManager implementation
 --
 -- Conventions:
 --   - Lua 5.2/5.3 compatible (GTNH OpenComputers)
@@ -110,99 +106,26 @@ local COLOR_TTD_WARN    = 0xFFFF00   -- yellow (1-5 min)
 local COLOR_TTD_CRITICAL = 0xFF0000  -- red (< 1 min)
 local COLOR_TTD_BAR_BG  = 0x222222   -- bar background
 
---===========================================================================
--- Module resolve helpers (soft-dependency loading)
---===========================================================================
+local REQUIRED_METHODS = {
+    subscriber = { "getActiveBrokers", "getBrokerStatus", "getNextPayload", "getQueueSize" },
+    matrix = { "getMachines", "getAllBrokers", "getMachineCount", "getStats", "updateFromPayload" },
+    ttd = { "getTTD", "updateFromPayload" },
+    alerts = {
+        "getAlerts", "acknowledge", "acknowledgeAll", "dismissResolved",
+        "getActiveCount", "ingest",
+    },
+}
 
---- Resolve a module with pcall, returning nil on failure.
--- Sets the global package.searchpath so modules under supervisor/ are findable.
-local function safe_require(module_name)
-    local ok, mod = pcall(require, module_name)
-    if ok and mod then
-        return mod
+local function validate_dependency(name, dependency)
+    if type(dependency) ~= "table" then
+        return "dashboard dependency '" .. name .. "' is required"
+    end
+    for _, method in ipairs(REQUIRED_METHODS[name]) do
+        if type(dependency[method]) ~= "function" then
+            return "dashboard dependency '" .. name .. "." .. method .. "' must be a function"
+        end
     end
     return nil
-end
-
--- Ensure supervisor/ modules are on the Lua path
--- OC typically uses / as separator; we inject the absolute or relative root.
--- The supervisor.lua entry point will set this up; here we do best-effort.
-if not package.searchpath then
-    -- Lua 5.2+: add to package.path before calling require
-    package.path = package.path .. ";supervisor/?.lua;src/?.lua"
-end
-
-local MatrixMod = safe_require("supervisor.machine_matrix")
-local TTDMod    = safe_require("supervisor.ttd_tracker")
-local AlertMod  = safe_require("supervisor.alerts")
-local SubMod    = safe_require("supervisor.modem_subscriber")
-
---===========================================================================
--- Inline stub factories for absent modules
--- Each returns a table with the same interface as the real module.
---===========================================================================
-
-local function make_matrix_stub()
-    return {
-        getMachines = function(_, broker_id)
-            return {}
-        end,
-        getAllBrokers = function(_)
-            return {}
-        end,
-        getMachineCount = function(_, broker_id)
-            return 0
-        end,
-        getStats = function(_, broker_id)
-            return { total = 0, available = 0, processing = 0, faulted = 0 }
-        end,
-        updateFromPayload = function() end,
-    }
-end
-
-local function make_ttd_stub()
-    return {
-        getTTD = function(_)
-            return {
-                items  = { level = 0, max = 100, depletion_secs = 0, critical = false },
-                fluids = { level = 0, max = 100, depletion_secs = 0, critical = false },
-                power  = { level = 0, max = 100, depletion_secs = 0, critical = false },
-            }
-        end,
-        updateFromPayload = function() end,
-    }
-end
-
-local function make_alerts_stub()
-    return {
-        getAlerts = function(_)
-            return {}
-        end,
-        acknowledge = function() end,
-        acknowledgeAll = function() end,
-        dismissResolved = function() end,
-        getActiveCount = function(_)
-            return 0
-        end,
-        ingest = function() end,
-    }
-end
-
-local function make_subscriber_stub()
-    return {
-        getActiveBrokers = function(_)
-            return {}
-        end,
-        getBrokerStatus = function()
-            return nil
-        end,
-        getNextPayload = function()
-            return nil
-        end,
-        getQueueSize = function()
-            return 0
-        end,
-    }
 end
 
 --===========================================================================
@@ -327,26 +250,32 @@ local function fill_region(gpu, x, y, w, h, color)
 end
 
 --===========================================================================
--- Dashboard:new(subscriber, matrix, ttd, alerts)
+-- Dashboard:new(dependencies)
 --
--- Creates a new Dashboard instance. Accepts pre-configured dependency
--- modules (B1-B4). If any module is nil, resolves via pcall(require)
--- with inline stubs as fallbacks.
---
--- The subscriber (B1) should be created and started by the supervisor's
--- main entry point (supervisor.lua, Task B6) in a separate coroutine/thread
--- so its event loop and the dashboard render loop can coexist.
+-- Creates a new Dashboard instance from explicit, pre-configured dependencies.
+-- Missing or incomplete capabilities fail construction instead of rendering
+-- empty production data.
 --
 -- Parameters:
---   subscriber (ModemSubscriber|nil): Pre-configured modem subscriber.
---   matrix      (GlobalMachineMatrix|nil): Pre-configured machine matrix.
---   ttd         (TTDTracker|nil): Pre-configured TTD tracker.
---   alerts      (AlertManager|nil): Pre-configured alert manager.
+--   dependencies.subscriber: canonical src.supervisor instance.
+--   dependencies.matrix: GlobalMachineMatrix instance.
+--   dependencies.ttd: TTDTracker instance.
+--   dependencies.alerts: AlertManager instance.
 --
 -- Returns:
 --   Dashboard instance, or nil + error message.
 --===========================================================================
-function Dashboard.new(subscriber, matrix, ttd, alerts)
+function Dashboard.new(dependencies)
+    if type(dependencies) ~= "table" then
+        return nil, "dashboard dependencies table is required"
+    end
+    for _, name in ipairs({ "subscriber", "matrix", "ttd", "alerts" }) do
+        local err = validate_dependency(name, dependencies[name])
+        if err then
+            return nil, err
+        end
+    end
+
     -- Resolve GPU
     local gpu
     if component and component.isAvailable and component.isAvailable("gpu") then
@@ -360,11 +289,10 @@ function Dashboard.new(subscriber, matrix, ttd, alerts)
     self.gpu = gpu
     self.running = false
 
-    -- Resolve dependent modules (B1-B4) with stubs as fallbacks
-    self.subscriber = subscriber or (SubMod and SubMod.new(123) or make_subscriber_stub())
-    self.matrix      = matrix      or (MatrixMod and MatrixMod.new(self.subscriber) or make_matrix_stub())
-    self.ttd         = ttd         or (TTDMod    and TTDMod.new()    or make_ttd_stub())
-    self.alerts      = alerts      or (AlertMod  and AlertMod.new()  or make_alerts_stub())
+    self.subscriber = dependencies.subscriber
+    self.matrix = dependencies.matrix
+    self.ttd = dependencies.ttd
+    self.alerts = dependencies.alerts
 
     -- Navigation state
     self.focused_panel = PANEL_BROKERS
@@ -443,7 +371,7 @@ end
 -- Dashboard:stop()
 --
 -- Halts the render loop. Uses computer.pushSignal to unblock any in-progress
--- event.pull(), mirroring ModemSubscriber's clean-exit pattern.
+-- event.pull(), mirroring the canonical Supervisor's clean-exit pattern.
 --===========================================================================
 function Dashboard:stop()
     if not self.running then

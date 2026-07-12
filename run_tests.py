@@ -8,6 +8,7 @@ Handles the package path setup and reports results.
 
 import sys
 import os
+import subprocess
 
 # Ensure the project root is on path
 project_root = os.path.dirname(os.path.abspath(__file__))
@@ -81,6 +82,7 @@ except Exception as e:
 
 # Define test files
 test_files = [
+    "tests.test_runtime_graph",
     "tests.test_jit_db_cleanup",
     "tests.test_telemetry_serialization",
     "tests.test_malformed_payload",
@@ -137,6 +139,17 @@ for test_file in standalone_tests:
         except Exception as e:
             print(f"  ERROR in {test_file}: {e}")
             all_passed = False
+
+# Run the dashboard suite in its own Lua runtime because it has a standalone
+# test harness and process-level exit status.
+dashboard_result = subprocess.run(
+    [sys.executable, os.path.join(project_root, "run_dashboard_tests.py")],
+    cwd=project_root,
+    check=False,
+)
+if dashboard_result.returncode != 0:
+    print(f"  ERROR in dashboard suite: exit code {dashboard_result.returncode}")
+    all_passed = False
 
 # Print summary
 try:

@@ -22,8 +22,13 @@ Think of it like a factory foreman:
 
 ```
 AE2-ES/
+  bin/
+    exec_broker.lua        ← Production broker launcher
+    supervisor.lua         ← Production supervisor launcher
+    configure_broker.lua   ← Explicit broker configuration
+    configure_supervisor.lua ← Explicit supervisor configuration
   src/
-    exec_broker.lua        ← Main event loop (6-phase state machine)
+    exec_broker.lua        ← Import-safe 6-phase state machine module
     hal.lua                ← Hardware Abstraction Layer (talks to OC components)
     BufferSnapshot.lua     ← Stability debouncing for buffer contents
     JobManifest.lua        ← Atomic unit of work (the "work order")
@@ -32,14 +37,45 @@ AE2-ES/
     MaintenanceReport.lua  ← Fault tracking per machine
     telemetrypayload.lua   ← Network telemetry broadcasts
     broker_logger.lua      ← Diagnostic logging
-    config_ui.lua          ← Interactive config wizard
-    supervisor.lua         ← Telemetry receiver (separate computer)
+    config_ui.lua          ← Import-safe broker config UI
+    supervisor.lua         ← Canonical telemetry subscriber module
+  supervisor/
+    config_ui.lua          ← Import-safe supervisor config UI
+    ui/dashboard.lua       ← Explicit-dependency dashboard module
   tests/
     test_integration.lua   ← Full-system integration tests
     test_state_transitions.lua  ← State machine validation
     ocemu_test_suite.lua   ← OC emulator tests (CI-safe)
     helpers/               ← Mock components for testing
 ```
+
+---
+
+## Canonical Runtime Graph
+
+```
+bin/exec_broker.lua
+  → src.config_ui
+  → src.exec_broker
+
+bin/supervisor.lua
+  → supervisor.config_ui
+  → src.supervisor                 sole modem subscriber/event.pull owner
+  → src.telemetrypayload           sole telemetry schema boundary
+
+supervisor.ui.dashboard
+  ← subscriber, matrix, TTD, and alerts supplied explicitly
+  ← not launched by bin/supervisor.lua while real dependencies are incomplete
+```
+
+Only files under `bin/` are executable composition roots. Requiring any module
+under `src/` or `supervisor/` performs no configuration, file loading, modem
+opening, or event-loop startup.
+
+`src.supervisor` owns deserialization, queueing, consumer fan-out, and broker
+health. The retired `supervisor.modem_subscriber` path must not be used. The
+dashboard fails construction when a required capability is absent; it never
+substitutes empty production data.
 
 ---
 

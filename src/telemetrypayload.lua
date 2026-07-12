@@ -36,12 +36,178 @@ do
   end
 
   function serialization.unserialize(s)
-    -- Use load/loadstring for safe deserialization (Lua 5.1+ compatible)
     if not s or s == "" then return nil end
-    local _load = loadstring or load
-    local f, err = _load("return " .. s, "deserialize")
-    if not f then return nil, err end
-    return pcall(f) and f() or nil
+    if #s > 1024 * 1024 then return nil, "serialized input too large" end
+
+    local position = 1
+    local length = #s
+    local parse_value
+
+    local function skip_whitespace()
+      local _, last = s:find("^%s*", position)
+      position = (last or position - 1) + 1
+    end
+
+    local function parse_string()
+      local quote = s:sub(position, position)
+      local start = position
+      position = position + 1
+
+      while position <= length do
+        local char = s:sub(position, position)
+        if char == "\\" then
+          position = position + 2
+        elseif char == quote then
+          local token = s:sub(start, position)
+          position = position + 1
+
+          -- The scanner guarantees token is one string literal, so decoding
+          -- this isolated token cannot execute an expression.
+          local chunk, err
+          if _VERSION == "Lua 5.1" and loadstring then
+            chunk, err = loadstring("return " .. token, "deserialize-string")
+            if chunk and setfenv then setfenv(chunk, {}) end
+          else
+            chunk, err = load("return " .. token, "deserialize-string", "t", {})
+          end
+          if not chunk then return nil, err end
+          local ok, value = pcall(chunk)
+          if not ok or type(value) ~= "string" then
+            return nil, "invalid string literal"
+          end
+          return value, nil
+        else
+          position = position + 1
+        end
+      end
+
+      return nil, "unterminated string literal"
+    end
+
+    local function parse_number()
+      local rest = s:sub(position)
+      local token = rest:match("^[-+]?%d+%.?%d*[eE][-+]?%d+")
+        or rest:match("^[-+]?%d+%.?%d*")
+        or rest:match("^[-+]?%.%d+[eE][-+]?%d+")
+        or rest:match("^[-+]?%.%d+")
+      local value = token and tonumber(token) or nil
+      if not value then return nil, "invalid number" end
+      position = position + #token
+      return value, nil
+    end
+
+    local function parse_identifier()
+      local identifier = s:match("^([%a_][%w_]*)", position)
+      if not identifier then return nil end
+      position = position + #identifier
+      return identifier
+    end
+
+    local function parse_table(depth)
+      if depth > 64 then return nil, "maximum table depth exceeded" end
+      position = position + 1
+      skip_whitespace()
+
+      local result = {}
+      local next_index = 1
+      if s:sub(position, position) == "}" then
+        position = position + 1
+        return result, nil
+      end
+
+      while position <= length do
+        skip_whitespace()
+        local key
+        local value
+        local err
+        local explicit_key = false
+
+        if s:sub(position, position) == "[" then
+          explicit_key = true
+          position = position + 1
+          key, err = parse_value(depth)
+          if err then return nil, err end
+          if key == nil then return nil, "nil table key" end
+          skip_whitespace()
+          if s:sub(position, position) ~= "]" then
+            return nil, "expected closing bracket"
+          end
+          position = position + 1
+          skip_whitespace()
+          if s:sub(position, position) ~= "=" then
+            return nil, "expected equals after table key"
+          end
+          position = position + 1
+        else
+          local key_start = position
+          local identifier = parse_identifier()
+          if identifier then
+            skip_whitespace()
+            if s:sub(position, position) == "=" then
+              explicit_key = true
+              key = identifier
+              position = position + 1
+            else
+              position = key_start
+            end
+          end
+        end
+
+        skip_whitespace()
+        value, err = parse_value(depth)
+        if err then return nil, err end
+        if explicit_key then
+          result[key] = value
+        else
+          result[next_index] = value
+          next_index = next_index + 1
+        end
+
+        skip_whitespace()
+        local separator = s:sub(position, position)
+        if separator == "}" then
+          position = position + 1
+          return result, nil
+        end
+        if separator ~= "," then
+          return nil, "expected comma or closing brace"
+        end
+        position = position + 1
+        skip_whitespace()
+        if s:sub(position, position) == "}" then
+          position = position + 1
+          return result, nil
+        end
+      end
+
+      return nil, "unterminated table"
+    end
+
+    parse_value = function(depth)
+      skip_whitespace()
+      local char = s:sub(position, position)
+      if char == "{" then
+        return parse_table(depth + 1)
+      elseif char == "\"" or char == "'" then
+        return parse_string()
+      elseif char:match("[%d%+%-%.]") then
+        return parse_number()
+      end
+
+      local identifier = parse_identifier()
+      if identifier == "true" then return true, nil end
+      if identifier == "false" then return false, nil end
+      if identifier == "nil" then return nil, nil end
+      return nil, "unexpected token at position " .. tostring(position)
+    end
+
+    local value, err = parse_value(0)
+    if err then return nil, err end
+    skip_whitespace()
+    if position <= length then
+      return nil, "trailing data after serialized value"
+    end
+    return value, nil
   end
 end
 

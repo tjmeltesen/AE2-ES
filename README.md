@@ -25,7 +25,7 @@ A decoupled, two-part MES-like system for GTNH (GregTech New Horizons) that coup
 AE2-ES is a manufacturing execution system designed for GTNH factories. It splits control into two independent OpenComputers programs connected via modem network:
 
 - **Exec Broker** — Subnet controller managing a localized machine array (e.g., 4 Large Chemical Reactors). Operates on an isolated AE2 subnet with a 6-phase state machine.
-- **Supervisor** — Central coordinator aggregating telemetry from all brokers, tracking global resource depletion (TTD), and providing a real-time dashboard.
+- **Supervisor** — Central coordinator aggregating telemetry from all brokers and exposing one queue/health interface for explicit consumers such as the dashboard.
 
 The system is designed for cooperative multitasking (OC's single-threaded Lua environment), fire-and-forget telemetry, and Just-In-Time database allocation to minimize GC pressure. Interactive config UIs on both broker and supervisor eliminate the need to edit Lua files for component address setup.
 
@@ -38,9 +38,9 @@ The system is designed for cooperative multitasking (OC's single-threaded Lua en
 │              SUPERVISOR                  │
 │  (Main-Net Coordinator)                  │
 │  - Aggregates telemetry from brokers     │
-│  - TTD (Time-to-Depletion) tracking      │
-│  - Inter-broker coordination             │
-│  - Central dashboard UI                  │
+│  - Owns the modem event loop + FIFO      │
+│  - Tracks broker health                  │
+│  - Fans out to explicit consumers        │
 │  - Interactive config UI (B7)            │
 └──────────┬──────────────────────────────┘
            │ modem broadcasts (fire-and-forget)
@@ -70,7 +70,18 @@ BUFFERING → LOGGING → ALLOCATING → TRANSFERRING → PROCESSING → CLEANUP
 ### Supervisor: Event-Driven Loop
 
 ```
-Listen → Deserialize → FIFO Queue → Index Matrix → Evaluate → Update UI
+Listen → src.telemetrypayload.deserialize → FIFO Queue → Consumer Fan-out
+                                          └→ Broker Health
+```
+
+### Canonical Runtime Graph
+
+```
+bin/exec_broker.lua → src.config_ui → src.exec_broker
+bin/supervisor.lua  → supervisor.config_ui → src.supervisor
+                                             └→ src.telemetrypayload
+
+supervisor.ui.dashboard ← explicit injected dependencies only
 ```
 
 ### Testing Tiers
@@ -93,7 +104,13 @@ AE2-ES/
 ├── README.md
 ├── .github/workflows/ae2-es-ci.yml    # 3-tier CI/CD Pipeline
 │
-├── src/                               # Exec Broker core modules
+├── bin/                               # Executable composition roots
+│   ├── exec_broker.lua                # Production broker launcher
+│   ├── supervisor.lua                 # Production supervisor launcher
+│   ├── configure_broker.lua           # Explicit broker configuration
+│   └── configure_supervisor.lua       # Explicit supervisor configuration
+│
+├── src/                               # Import-safe runtime modules
 │   ├── exec_broker.lua                # A8: Main event loop (925 lines)
 │   ├── buffersnapshot.lua             # A3: Buffer checksum & debounce
 │   ├── hal.lua                        # A5: Hardware Abstraction Layer
@@ -110,7 +127,6 @@ AE2-ES/
 │
 ├── supervisor/                        # Supervisor sub-modules
 │   ├── config_ui.lua                  # B7: Supervisor config UI
-│   ├── modem_subscriber.lua           # B1: Modem event loop
 │   └── ui/dashboard.lua               # B5: Dashboard UI
 │
 ├── exec_broker/
@@ -181,10 +197,19 @@ AE2-ES/
 
 ### Deploying to OpenComputers
 
-1. Copy `src/` contents to the Exec Broker OC computer's `/` directory
-2. Copy `supervisor/` contents to the Supervisor OC computer's `/` directory
-3. Copy root-level modules (`JobManifest.lua`, `JobQueue.lua`, `MaintenanceReport.lua`, `ttd_tracker.lua`) to both computers
-4. Run `src/config_ui.lua` on first boot for interactive component setup (or `src/exec_broker.lua` / `src/supervisor.lua` directly)
+1. Copy `bin/`, `src/`, and `supervisor/` while preserving those directory names.
+2. Copy root-level modules (`JobManifest.lua`, `JobQueue.lua`, `MaintenanceReport.lua`, `ttd_tracker.lua`) to both computers.
+3. On an Exec Broker computer, run `lua bin/configure_broker.lua`, then `lua bin/exec_broker.lua`.
+4. On the Supervisor computer, run `lua bin/configure_supervisor.lua`, then `lua bin/supervisor.lua`.
+
+`src/*.lua` and `supervisor/config_ui.lua` are modules, not executable scripts. The
+production Supervisor launcher does not compose `supervisor/ui/dashboard.lua`:
+the dashboard now rejects missing subscriber, matrix, TTD, or alert capabilities
+instead of silently displaying stub data.
+
+Legacy callers of `require("supervisor.modem_subscriber")` must migrate to
+`require("src.supervisor").Supervisor`; it owns the modem event loop, telemetry
+queue, consumer fan-out, and broker-health queries.
 
 ### Local Development & Testing
 
@@ -251,11 +276,11 @@ cd gametest && ./gradlew build
 
 | Module | File | Description |
 |--------|------|-------------|
-| **B1: Modem Subscriber** | `supervisor/modem_subscriber.lua` | event.pull("modem_message") loop, deserialization, FIFO queue, per-broker health (STALE >30s, OFFLINE >120s). |
+| **B1: Modem Subscriber** | `src/supervisor.lua` | Sole `event.pull()` owner; canonical telemetry deserialization, FIFO queue, consumer fan-out, and broker health (STALE >30s, OFFLINE >120s). |
 | **B2: GlobalMachineMatrix** | `src/supervisor.lua` | Registry tracking every broker and machine array status. |
 | **B3: TTD Tracking** | `ttd_tracker.lua` | 20-sample sliding window, WARNING/CRITICAL thresholds, crafting signal emission with debounce, kind-filtered queries. |
 | **B4: Alert Routing** | `src/supervisor.lua` | FIFO queue with overflow trimming. 200-entry circular log buffer. |
-| **B5: Dashboard UI** | `supervisor/ui/dashboard.lua` | Real-time factory view. Broker list, machine grid, TTD gauges, alert log. |
+| **B5: Dashboard UI** | `supervisor/ui/dashboard.lua` | Real-time factory view with explicit subscriber, matrix, TTD, and alert dependencies. It is not silently composed by the production launcher while those implementations are incomplete. |
 | **B6: Inter-Broker Coordination** | `src/supervisor.lua` | Consumer registration pattern. Cross-broker routing, maintenance deadlock detection. |
 | **B7: Config UI** | `supervisor/config_ui.lua` | Tabbed config UI (Modem/TTD/Dashboard/Brokers). Broker health indicators, threshold editing, layout config. |
 
@@ -361,7 +386,7 @@ See `.github/workflows/ae2-es-ci.yml`. Three tiers with per-event conditionals:
 
 | Job | Trigger | What Runs |
 |-----|---------|-----------|
-| **Tier 1: Unit + Integration** | Every push + PR (`!= schedule`) | `python run_tests.py` + `run_dashboard_tests.py` |
+| **Tier 1: Unit + Integration** | Every push + PR (`!= schedule`) | `python run_tests.py` (includes runtime-graph and dashboard suites) |
 | **Tier 2: Nightly Soak** | Schedule + manual (`== schedule \|\| workflow_dispatch`) | Full suite 5x + GC memory leak check |
 | **Tier 3: Extended Soak** | Schedule + manual | `python tests/run_tier3.py` + `lua tests/run_tier3.lua` |
 | **Horizon-QA GameTest** | PR to main only | `cd gametest && ./gradlew runServer -Dhorizonqa.mode=ci` |

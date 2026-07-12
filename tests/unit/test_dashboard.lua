@@ -331,10 +331,47 @@ package.path = root .. "/supervisor/?.lua;"
 
 print("\n=== Test Group 1: Dashboard Creation & Dependency Resolution ===")
 
+local function _make_dependencies()
+    return {
+        subscriber = {
+            getActiveBrokers = function() return {} end,
+            getBrokerStatus = function() return nil end,
+            getNextPayload = function() return nil end,
+            getQueueSize = function() return 0 end,
+        },
+        matrix = {
+            getMachines = function() return {} end,
+            getAllBrokers = function() return {} end,
+            getMachineCount = function() return 0 end,
+            getStats = function()
+                return { total = 0, available = 0, processing = 0, faulted = 0 }
+            end,
+            updateFromPayload = function() end,
+        },
+        ttd = {
+            getTTD = function()
+                return {
+                    items = { level = 0, max = 100, depletion_secs = 0, critical = false },
+                    fluids = { level = 0, max = 100, depletion_secs = 0, critical = false },
+                    power = { level = 0, max = 100, depletion_secs = 0, critical = false },
+                }
+            end,
+            updateFromPayload = function() end,
+        },
+        alerts = {
+            getAlerts = function() return {} end,
+            acknowledge = function() end,
+            acknowledgeAll = function() end,
+            dismissResolved = function() end,
+            getActiveCount = function() return 0 end,
+            ingest = function() end,
+        },
+    }
+end
+
 local function _new_dash()
-    -- require inside to avoid upvalue capture before Dashboard is loaded
     local Dashboard = require("supervisor.ui.dashboard")
-    return Dashboard.new(nil, nil, nil, nil)
+    return Dashboard.new(_make_dependencies())
 end
 
 print("\n--- 1.1: Dashboard.new() creates instance with GPU ---")
@@ -354,17 +391,18 @@ local function test_dashboard_creation()
 end
 test_dashboard_creation()
 
-print("\n--- 1.2: Dashboard resolves all four dependency modules or stubs ---")
+print("\n--- 1.2: Dashboard uses all four explicit dependencies ---")
 local function test_dashboard_dependencies()
     _reset_mock_gpu()
     _reset_mock_event()
     local Dashboard = require("supervisor.ui.dashboard")
-    local dash = _new_dash()
+    local dependencies = _make_dependencies()
+    local dash = Dashboard.new(dependencies)
 
-    assert_not_nil(dash.subscriber, "Subscriber resolved")
-    assert_not_nil(dash.matrix, "Matrix resolved")
-    assert_not_nil(dash.ttd, "TTD resolved")
-    assert_not_nil(dash.alerts, "Alerts resolved")
+    assert_equal(dash.subscriber, dependencies.subscriber, "Subscriber injected")
+    assert_equal(dash.matrix, dependencies.matrix, "Matrix injected")
+    assert_equal(dash.ttd, dependencies.ttd, "TTD injected")
+    assert_equal(dash.alerts, dependencies.alerts, "Alerts injected")
 
     -- Each should have the expected interface methods
     assert_not_nil(dash.subscriber.getActiveBrokers, "subscriber has getActiveBrokers")
@@ -381,7 +419,7 @@ local function test_dashboard_no_gpu()
     component.isAvailable = function() return false end
 
     local Dashboard = require("supervisor.ui.dashboard")
-    local dash, err = Dashboard.new(nil, nil, nil, nil)
+    local dash, err = Dashboard.new(_make_dependencies())
     assert_nil(dash, "Dashboard creation fails without GPU")
     assert_not_nil(err, "Returns error message")
     assert_true(err:find("GPU") or err:find("gpu"), "Error mentions GPU")
@@ -783,76 +821,35 @@ assert_equal(replicate_color_for_ttd(false, 0),   0x00FF00, "0 depletion -> gree
 assert_equal(replicate_color_for_ttd(false, nil), 0x00FF00, "nil depletion -> green")
 
 --===========================================================================
--- Test Group 6: Stub Module Interfaces
+-- Test Group 6: Explicit Dependency Failures
 --===========================================================================
 
-print("\n=== Test Group 6: Stub Module Interfaces ===")
+print("\n=== Test Group 6: Explicit Dependency Failures ===")
 
-print("\n--- 6.1: Matrix stub returns empty machine list ---")
-local function test_matrix_stub()
+local function assert_missing_dependency(name)
     local Dashboard = require("supervisor.ui.dashboard")
     _reset_mock_gpu()
     _reset_mock_event()
-    local dash = _new_dash()
+    local dependencies = _make_dependencies()
+    dependencies[name] = nil
 
-    -- With stubs (no real B2 module), getMachines returns empty
-    local machines = dash.matrix:getMachines("any-broker")
-    assert_not_nil(machines, "getMachines returns a table")
-    local count = 0
-    for _ in pairs(machines) do count = count + 1 end
-    assert_equal(count, 0, "Stub matrix returns empty table")
+    local dash, err = Dashboard.new(dependencies)
+    assert_nil(dash, "Missing " .. name .. " rejects construction")
+    assert_equal(err, "dashboard dependency '" .. name .. "' is required",
+        "Missing " .. name .. " returns named error")
 end
-test_matrix_stub()
 
-print("\n--- 6.2: TTD stub returns zero-level data ---")
-local function test_ttd_stub()
-    local Dashboard = require("supervisor.ui.dashboard")
-    _reset_mock_gpu()
-    _reset_mock_event()
-    local dash = _new_dash()
+print("\n--- 6.1: Missing subscriber fails by name ---")
+assert_missing_dependency("subscriber")
 
-    local ttd = dash.ttd:getTTD()
-    assert_not_nil(ttd, "getTTD returns table")
-    assert_not_nil(ttd.items, "Items TTD present")
-    assert_not_nil(ttd.fluids, "Fluids TTD present")
-    assert_not_nil(ttd.power, "Power TTD present")
-    assert_equal(ttd.items.level, 0, "Items level starts at 0")
-    assert_equal(ttd.fluids.level, 0, "Fluids level starts at 0")
-    assert_equal(ttd.power.level, 0, "Power level starts at 0")
-    assert_true(ttd.items.critical == false, "Not critical initially")
-end
-test_ttd_stub()
+print("\n--- 6.2: Missing matrix fails by name ---")
+assert_missing_dependency("matrix")
 
-print("\n--- 6.3: Alerts stub returns empty alert list ---")
-local function test_alerts_stub()
-    local Dashboard = require("supervisor.ui.dashboard")
-    _reset_mock_gpu()
-    _reset_mock_event()
-    local dash = _new_dash()
+print("\n--- 6.3: Missing TTD fails by name ---")
+assert_missing_dependency("ttd")
 
-    local alerts = dash.alerts:getAlerts()
-    assert_not_nil(alerts, "getAlerts returns table")
-    assert_equal(#alerts, 0, "Stub has no alerts")
-
-    local count = dash.alerts:getActiveCount()
-    assert_equal(count, 0, "Active count is 0")
-end
-test_alerts_stub()
-
-print("\n--- 6.4: Subscriber stub returns empty broker list ---")
-local function test_subscriber_stub()
-    local Dashboard = require("supervisor.ui.dashboard")
-    _reset_mock_gpu()
-    _reset_mock_event()
-    local dash = _new_dash()
-
-    local brokers = dash.subscriber:getActiveBrokers()
-    assert_not_nil(brokers, "getActiveBrokers returns table")
-    local count = 0
-    for _ in pairs(brokers) do count = count + 1 end
-    assert_equal(count, 0, "Stub subscriber has no brokers")
-end
-test_subscriber_stub()
+print("\n--- 6.4: Missing alerts fails by name ---")
+assert_missing_dependency("alerts")
 
 --===========================================================================
 -- Test Group 7: Poll Telemetry

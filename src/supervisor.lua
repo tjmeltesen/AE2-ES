@@ -12,8 +12,8 @@
 
 local component = require("component")
 local event = require("event")
-local serialization = require("serialization")
 local computer = require("computer")
+local TelemetryPayload = require("src.telemetrypayload")
 
 --- ============================================================
 --- Configuration
@@ -30,91 +30,10 @@ local CONFIG = {
   maxLogEntries = 200,
   -- Health check interval in seconds
   healthCheckInterval = 5.0,
+  -- Broker health thresholds, measured from last valid payload received
+  staleThreshold = 30,
+  offlineThreshold = 120,
 }
-
---- ============================================================
---- TelemetryPayload
---- ============================================================
--- Expected structure from Exec Broker (A7 TelemetryPayload):
--- {
---   brokerId = string,              -- Unique broker identifier
---   timestamp = number,             -- os.clock() value at send time
---   queueLength = number,           -- Number of jobs in broker queue
---   hardwareMatrix = {              -- Array of machine statuses
---     { address = string,
---       status = "AVAILABLE"|"LOCKED"|"PROCESSING"|"FAULTED",
---       activeJobId = string|nil,
---       progress = number|nil },
---     ...
---   },
---   alerts = {                      -- Array of active alerts
---     { type = string,
---       severity = "INFO"|"WARNING"|"CRITICAL",
---       message = string,
---       machineAddress = string|nil },
---     ...
---   },
---   powerStored = number|nil,       -- AE2 power in subnet
---   powerMax = number|nil,          -- AE2 max power in subnet
---   cpuCount = number|nil,          -- Number of AE2 crafting CPUs
--- }
-
-local TelemetryPayload = {}
-TelemetryPayload.__index = TelemetryPayload
-
---- Deserialize a raw modem string into a TelemetryPayload table.
---- @param raw string Serialized Lua table from modem
---- @return TelemetryPayload|nil payload, string|nil error
-function TelemetryPayload.deserialize(raw)
-  if type(raw) ~= "string" or raw == "" then
-    return nil, "empty or non-string payload"
-  end
-
-  local ok, data = pcall(serialization.unserialize, raw)
-  if not ok or type(data) ~= "table" then
-    return nil, "deserialization failed: " .. tostring(data)
-  end
-
-  -- Validate required fields
-  if type(data.brokerId) ~= "string" or data.brokerId == "" then
-    return nil, "missing or invalid brokerId"
-  end
-
-  return setmetatable(data, TelemetryPayload), nil
-end
-
---- Validate the payload structure for required fields.
---- @return boolean valid, string|nil error
-function TelemetryPayload:validate()
-  if type(self.timestamp) ~= "number" then
-    return false, "missing timestamp"
-  end
-  if type(self.hardwareMatrix) ~= "table" then
-    return false, "missing hardwareMatrix"
-  end
-  if type(self.alerts) ~= "table" then
-    self.alerts = {} -- default to empty
-  end
-  return true, nil
-end
-
---- Human-readable summary for logging and dashboard.
---- @return string
-function TelemetryPayload:summary()
-  local machineCount = #(self.hardwareMatrix or {})
-  local alertCount = #(self.alerts or {})
-  local faultedCount = 0
-  for _, m in ipairs(self.hardwareMatrix or {}) do
-    if m.status == "FAULTED" then
-      faultedCount = faultedCount + 1
-    end
-  end
-  return string.format(
-    "[%s] %d machines (%d faulted), %d alerts, queue=%d",
-    self.brokerId, machineCount, faultedCount, alertCount,
-    self.queueLength or 0
-  )
-end
 
 --- ============================================================
 --- FIFO Event Queue (TelemetryQueue)
@@ -234,6 +153,7 @@ function Supervisor.new(config)
     _config = cfg,
     _modem = nil,
     _queue = TelemetryQueue.new(cfg.maxQueueSize, cfg.queueTrimTarget),
+    _activeBrokers = {},
     _running = false,
     _consumers = {},
     _stats = {
@@ -306,7 +226,7 @@ function Supervisor:_initModem()
   self._modem = component.modem
 
   -- Open listening port
-  local ok, err = pcall(self._modem.open, self._modem, self._config.supervisorPort)
+  local ok, err = pcall(self._modem.open, self._config.supervisorPort)
   if not ok then
     return false, "failed to open port " .. self._config.supervisorPort .. ": " .. tostring(err)
   end
@@ -320,7 +240,7 @@ end
 --- Close modem port gracefully.
 function Supervisor:_closeModem()
   if self._modem then
-    pcall(self._modem.close, self._modem, self._config.supervisorPort)
+    pcall(self._modem.close, self._config.supervisorPort)
     self:_logMessage("INFO", "Modem port closed")
   end
 end
@@ -387,6 +307,7 @@ function Supervisor:_processMessage(from, port, payload)
 
   self._stats.messagesValid = self._stats.messagesValid + 1
   self._stats.lastBrokerId = telemetry.brokerId
+  self._activeBrokers[telemetry.brokerId] = computer.uptime()
 
   -- Step 3: Enqueue into FIFO (for polling consumers like B5 Dashboard)
   self._queue:push(telemetry)
@@ -484,6 +405,7 @@ end
 --- Signal the event loop to stop gracefully.
 function Supervisor:stop()
   self._running = false
+  pcall(computer.pushSignal, "ae2es_supervisor_stop")
 end
 
 --- Check if the supervisor is currently running.
@@ -595,6 +517,49 @@ function Supervisor:getQueue()
   return self._queue
 end
 
+--- Dequeue the oldest telemetry payload.
+--- @return TelemetryPayload|nil
+function Supervisor:getNextPayload()
+  return self._queue:pop()
+end
+
+--- Return the number of telemetry payloads waiting in the queue.
+--- @return number
+function Supervisor:getQueueSize()
+  return self._queue:count()
+end
+
+--- Return the current health status for a broker.
+--- @param brokerId string
+--- @return "ACTIVE"|"STALE"|"OFFLINE"|nil
+function Supervisor:getBrokerStatus(brokerId)
+  local lastHeard = self._activeBrokers[brokerId]
+  if lastHeard == nil then
+    return nil
+  end
+
+  local elapsed = computer.uptime() - lastHeard
+  if elapsed > self._config.offlineThreshold then
+    return "OFFLINE"
+  elseif elapsed > self._config.staleThreshold then
+    return "STALE"
+  end
+  return "ACTIVE"
+end
+
+--- Return a snapshot of all known brokers and their current health.
+--- @return table<string, {last_heard:number, status:string}>
+function Supervisor:getActiveBrokers()
+  local brokers = {}
+  for brokerId, lastHeard in pairs(self._activeBrokers) do
+    brokers[brokerId] = {
+      last_heard = lastHeard,
+      status = self:getBrokerStatus(brokerId),
+    }
+  end
+  return brokers
+end
+
 --- Get supervisor configuration (copied to prevent mutation).
 --- @return table
 function Supervisor:getConfig()
@@ -603,52 +568,6 @@ function Supervisor:getConfig()
     cfg[k] = v
   end
   return cfg
-end
-
---- ============================================================
---- Module Exports
---- ============================================================
-
--- ===========================================================================
--- Entry point — run as standalone script
--- ===========================================================================
--- Detects direct execution vs require() via package.loaded.
-if not package.loaded["src.supervisor"] then
-  local _ep_ok, _ep_err = pcall(function()
-    local cfgPath = "/home/ae2es_supervisor.cfg"
-    local cfgFile = io.open(cfgPath, "r")
-    local config = nil
-
-    if cfgFile then
-      local raw = cfgFile:read("*a")
-      cfgFile:close()
-      local ok2, result = pcall(loadstring("return " .. raw))
-      if ok2 and type(result) == "table" then
-        config = result
-        print("Loaded config from " .. cfgPath)
-      end
-    end
-
-    if not config then
-      print("No config found. Running config UI first...")
-      local ConfigUI = require("supervisor.config_ui")
-      local cfg = ConfigUI.run_wizard()
-      if cfg then
-        ConfigUI.save_config(cfg)
-        config = cfg
-      end
-      if not config then
-        error("Configuration cancelled — cannot start supervisor without config")
-      end
-    end
-
-    local sv = Supervisor.new(config)
-    print("Starting Supervisor on port " .. (config.supervisorPort or 100))
-    sv:start()
-  end)
-  if not _ep_ok and _ep_err then
-    print("Supervisor error: " .. tostring(_ep_err))
-  end
 end
 
 return {

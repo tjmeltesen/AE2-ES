@@ -9,6 +9,48 @@ MockEnv.setup()
 
 local TelemetryPayload = require("src.telemetrypayload")
 
+Assert.startTest("deserialize does not execute modem payload code")
+do
+  _G.__ae2es_payload_executed = nil
+  local malicious = [[
+    (function()
+      _G.__ae2es_payload_executed = true
+      return {
+        brokerId = "attacker",
+        timestamp = 1,
+        queueLength = 0,
+        hardwareMatrix = {},
+        alerts = {}
+      }
+    end)()
+  ]]
+
+  local payload = TelemetryPayload.deserialize(malicious)
+  Assert.isNil(payload, "Executable payload should be rejected")
+  Assert.isNil(_G.__ae2es_payload_executed, "Payload must not mutate the global environment")
+  _G.__ae2es_payload_executed = nil
+end
+Assert.endTest()
+
+Assert.startTest("deserialize rejects executable expressions")
+do
+  local executable = [[
+    (function()
+      return {
+        brokerId = "attacker",
+        timestamp = 1,
+        queueLength = 0,
+        hardwareMatrix = {},
+        alerts = {}
+      }
+    end)()
+  ]]
+
+  local payload = TelemetryPayload.deserialize(executable)
+  Assert.isNil(payload, "Only serialized data literals should be accepted")
+end
+Assert.endTest()
+
 -- ============================================================
 -- Test Group 1: Nil and Empty Input
 -- ============================================================
