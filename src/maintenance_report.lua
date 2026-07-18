@@ -1,5 +1,7 @@
 -- Canonical MaintenanceReport domain module. Safe to import outside OpenComputers.
 
+local BoundedList = require("lib.bounded_list")
+
 local MaintenanceReport = {}
 MaintenanceReport.__index = MaintenanceReport
 
@@ -48,7 +50,7 @@ function MaintenanceReport.new(machineId)
     machineId = machineId or "unknown",
     faultCode = 0,
     isRepairable = false,
-    _history = {},
+    _history = BoundedList.new(DEFAULT_MAX_HISTORY),
     _maxHistory = DEFAULT_MAX_HISTORY,
     _lastReport = nil,
   }, MaintenanceReport)
@@ -75,10 +77,11 @@ function MaintenanceReport:logToHistory(event)
     severity = self:getSeverity(code),
     isRepairable = self:isFaultRepairable(code),
   }
-  if #self._history >= self._maxHistory then table.remove(self._history, 1) end
-  table.insert(self._history, entry)
+  self._history._maxSize = self._maxHistory
+  self._history._trimTarget = self._maxHistory
+  self._history:push(entry)
   self._lastReport = entry
-  return #self._history
+  return self._history:size()
 end
 
 function MaintenanceReport:reportFault(code, description)
@@ -102,10 +105,11 @@ function MaintenanceReport:clearFault(resolutionNote)
 end
 
 function MaintenanceReport:getHistory(limit)
-  if not limit or limit >= #self._history then return self._history end
+  local history = self._history:toTable()
+  if not limit or limit >= self._history:size() then return history end
   local result = {}
-  for i = math.max(1, #self._history - limit + 1), #self._history do
-    table.insert(result, self._history[i])
+  for i = math.max(1, self._history:size() - limit + 1), self._history:size() do
+    table.insert(result, history[i])
   end
   return result
 end
@@ -119,7 +123,7 @@ function MaintenanceReport:toTelemetry()
     isRepairable = self.isRepairable,
     faultSummary = self:toHumanReadable(self.faultCode),
     lastReportAt = self._lastReport and self._lastReport.timestamp or 0,
-    historyCount = #self._history,
+    historyCount = self._history:size(),
   }
 end
 
@@ -135,8 +139,8 @@ function MaintenanceReport:toString()
     table.insert(lines, "Guidance:  " .. self:getGuidance(self.faultCode))
     table.insert(lines, "")
   end
-  if #self._history > 0 then
-    table.insert(lines, "-- History (" .. #self._history .. " entries, latest 5 shown) --")
+  if self._history:size() > 0 then
+    table.insert(lines, "-- History (" .. self._history:size() .. " entries, latest 5 shown) --")
     for _, entry in ipairs(self:getHistory(5)) do
       table.insert(lines, string.format("[%s] [%s] %s",
         os.date("%H:%M:%S", entry.timestamp), entry.severity, entry.report))
@@ -147,7 +151,8 @@ end
 
 function MaintenanceReport:reset()
   self.faultCode, self.isRepairable = 0, false
-  self._history, self._lastReport = {}, nil
+  self._history:clear()
+  self._lastReport = nil
 end
 
 return MaintenanceReport

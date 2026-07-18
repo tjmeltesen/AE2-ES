@@ -14,6 +14,7 @@ local component = require("component")
 local event = require("event")
 local computer = require("computer")
 local TelemetryPayload = require("src.telemetrypayload")
+local BoundedList = require("lib.bounded_list")
 
 --- ============================================================
 --- Configuration
@@ -51,7 +52,10 @@ TelemetryQueue.__index = TelemetryQueue
 --- @return TelemetryQueue
 function TelemetryQueue.new(maxSize, trimTarget)
   return setmetatable({
-    _queue = {},
+    _queue = BoundedList.new(
+      maxSize or CONFIG.maxQueueSize,
+      trimTarget or CONFIG.queueTrimTarget
+    ),
     _maxSize = maxSize or CONFIG.maxQueueSize,
     _trimTarget = trimTarget or CONFIG.queueTrimTarget,
     _pushCount = 0,
@@ -64,23 +68,18 @@ end
 --- Trims oldest entries when maxSize exceeded to prevent memory leaks.
 --- @param payload TelemetryPayload
 function TelemetryQueue:push(payload)
-  table.insert(self._queue, payload)
+  local beforeSize = self._queue:size()
+  self._queue:push(payload)
   self._pushCount = self._pushCount + 1
 
-  -- Trim if over capacity
-  if #self._queue > self._maxSize then
-    local toRemove = #self._queue - self._trimTarget
-    for _ = 1, toRemove do
-      table.remove(self._queue, 1)
-    end
-    self._droppedCount = self._droppedCount + toRemove
-  end
+  local expectedSize = beforeSize + 1
+  self._droppedCount = self._droppedCount + expectedSize - self._queue:size()
 end
 
 --- Pop the oldest telemetry payload from the queue.
 --- @return TelemetryPayload|nil
 function TelemetryQueue:pop()
-  local payload = table.remove(self._queue, 1)
+  local payload = table.remove(self._queue:toTable(), 1)
   if payload then
     self._popCount = self._popCount + 1
   end
@@ -90,29 +89,27 @@ end
 --- Peek at the oldest entry without removing it.
 --- @return TelemetryPayload|nil
 function TelemetryQueue:peek()
-  return self._queue[1]
+  return self._queue:toTable()[1]
 end
 
 --- Get current queue depth.
 --- @return number
 function TelemetryQueue:count()
-  return #self._queue
+  return self._queue:size()
 end
 
 --- Clear all entries. Returns the number of entries cleared.
 --- @return number cleared
 function TelemetryQueue:clear()
-  local count = #self._queue
-  self._queue = {}
-  return count
+  return self._queue:clear()
 end
 
 --- Drain all entries into a new table (for batch consumer processing).
 --- Efficient for consumers that process all pending messages at once.
 --- @return TelemetryPayload[] entries
 function TelemetryQueue:drain()
-  local entries = self._queue
-  self._queue = {}
+  local entries = self._queue:toTable()
+  self._queue:clear()
   self._popCount = self._popCount + #entries
   return entries
 end
@@ -121,7 +118,7 @@ end
 --- @return table { count, pushed, popped, dropped }
 function TelemetryQueue:stats()
   return {
-    count = #self._queue,
+    count = self._queue:size(),
     pushed = self._pushCount,
     popped = self._popCount,
     dropped = self._droppedCount,
@@ -164,7 +161,7 @@ function Supervisor.new(config)
       lastMessageTime = 0,
       lastBrokerId = nil,
     },
-    _log = {},
+    _log = BoundedList.new(cfg.maxLogEntries),
     _logIndex = 0,
   }, Supervisor)
 end
@@ -184,10 +181,7 @@ function Supervisor:_logMessage(level, message)
     level = level,
     message = message,
   }
-  table.insert(self._log, entry)
-  if #self._log > self._config.maxLogEntries then
-    table.remove(self._log, 1)
-  end
+  self._log:push(entry)
 end
 
 -- Public log entry method (called by GlobalLogger, dashboard, etc.)
@@ -201,15 +195,16 @@ end
 -- @param count number|nil Number of entries to return (default: all)
 -- @return table[]
 function Supervisor:getLog(count)
-  if count and count < #self._log then
-    local start = #self._log - count + 1
+  local log = self._log:toTable()
+  if count and count < self._log:size() then
+    local start = self._log:size() - count + 1
     local result = {}
-    for i = start, #self._log do
-      table.insert(result, self._log[i])
+    for i = start, self._log:size() do
+      table.insert(result, log[i])
     end
     return result
   end
-  return self._log
+  return log
 end
 
 --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
