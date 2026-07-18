@@ -52,7 +52,7 @@ function MachineNode.new(hardwareAddress, arg2)
     machineType = "gt_machine"
   end
 
-  return setmetatable({
+  local self = setmetatable({
     hardwareAddress  = hardwareAddress,
     machineType      = machineType,
     laneId           = laneId,
@@ -68,6 +68,20 @@ function MachineNode.new(hardwareAddress, arg2)
     _cachedProgress  = 0,
     _lastPollTime    = 0,
   }, MachineNode)
+
+  if type(arg2) == "table" and arg2.useStateMachine == true then
+    local StateMachine = require("lib.state_machine")
+    self._stateMachine = StateMachine.new(self.status, self)
+    for _, status in pairs(MachineNode.STATUS) do
+      self._stateMachine:addState(status, {
+        enter = function(node)
+          node.status = status
+        end,
+      })
+    end
+  end
+
+  return self
 end
 
 ------------------------------------------------------------------------
@@ -83,7 +97,11 @@ end
 --- Set the status directly (internal use; prefer lock/unlock/reportFault).
 -- @param newStatus  string  One of MachineNode.STATUS.*
 function MachineNode:setStatus(newStatus)
-  self.status = newStatus
+  if self._stateMachine then
+    self._stateMachine:transition(newStatus)
+  else
+    self.status = newStatus
+  end
 end
 
 --- Check if the machine is available for dispatching.
@@ -127,7 +145,7 @@ function MachineNode:lock()
   if self.status ~= MachineNode.STATUS.AVAILABLE then
     return false
   end
-  self.status = MachineNode.STATUS.LOCKED
+  self:setStatus(MachineNode.STATUS.LOCKED)
   return true
 end
 
@@ -139,7 +157,7 @@ function MachineNode:unlock()
   if self.status == MachineNode.STATUS.PROCESSING then
     return false
   end
-  self.status = MachineNode.STATUS.AVAILABLE
+  self:setStatus(MachineNode.STATUS.AVAILABLE)
   self.activeJob = nil
   return true
 end
@@ -154,7 +172,7 @@ function MachineNode:bindJob(job)
   if type(job) ~= "table" or not job.id then
     return false
   end
-  self.status    = MachineNode.STATUS.PROCESSING
+  self:setStatus(MachineNode.STATUS.PROCESSING)
   self.activeJob = job
   return true
 end
@@ -165,7 +183,7 @@ function MachineNode:releaseJob()
   if self.status ~= MachineNode.STATUS.PROCESSING then
     return false
   end
-  self.status    = MachineNode.STATUS.AVAILABLE
+  self:setStatus(MachineNode.STATUS.AVAILABLE)
   self.activeJob = nil
   return true
 end
@@ -179,7 +197,7 @@ end
 -- @param code         number  Fault code
 -- @param description  string  Human-readable fault description
 function MachineNode:recordFault(code, description)
-  self.status = MachineNode.STATUS.FAULTED
+  self:setStatus(MachineNode.STATUS.FAULTED)
   self.maintenanceFlags = {
     hasFault    = true,
     code        = code or 0,
@@ -208,7 +226,7 @@ function MachineNode:clearFault()
     description = "",
     timestamp   = 0,
   }
-  self.status   = MachineNode.STATUS.AVAILABLE
+  self:setStatus(MachineNode.STATUS.AVAILABLE)
   self.activeJob = nil
   return true
 end
@@ -267,7 +285,7 @@ end
 
 --- Reset the node to factory defaults (for testing / re-initialization).
 function MachineNode:reset()
-  self.status           = MachineNode.STATUS.AVAILABLE
+  self:setStatus(MachineNode.STATUS.AVAILABLE)
   self.activeJob        = nil
   self.maintenanceFlags = {
     hasFault    = false,

@@ -36,6 +36,8 @@ end
 -- ---------------------------------------------------------------------------
 local ProdBufferSnapshot = require("src.BufferSnapshot")
 local JobManifest = require("jobmanifest")
+local ExecBroker = require("src.exec_broker")
+local MachineNode = require("src.MachineNode")
 
 -- ---------------------------------------------------------------------------
 -- Locals
@@ -902,6 +904,62 @@ do
   Assert.equal(0, snapR:getStableCount(), "Fresh snapshot → stableCount = 0")
   snapR:resetDebounce()
   Assert.equal(0, snapR:getStableCount(), "After reset → stableCount = 0")
+end
+Assert.endTest()
+
+-- Suite 13: shared state-machine dispatch remains phase-compatible
+Assert.startTest("13. Legacy and shared dispatcher parity")
+do
+  local function makeBroker(useStateMachine)
+    local modules = {
+      JobManifest = { new = function() return {} end },
+      MachineNode = MachineNode,
+      BufferSnapshot = { new = function() return {} end },
+      JobQueue = { new = function()
+        return { length = function() return 0 end, peek = function() return nil end }
+      end },
+      HAL = { new = function() return {} end },
+      MaintenanceReport = { new = function()
+        return { faultCode = 0 }
+      end },
+      TelemetryPayload = { build = function()
+        return { transmit = function() end }
+      end },
+    }
+    local broker = ExecBroker.new({
+      brokerId = "dispatch-" .. tostring(useStateMachine),
+      machines = {{ laneId = "lane-1", machineAddr = "machine-1" }},
+      modules = modules,
+      useStateMachine = useStateMachine,
+      pollInterval = 0,
+    })
+    broker._phasePROCESSING = function() end
+    broker._phaseCLEANUP = function() end
+    broker._phaseBUFFERING = function() return ExecBroker.PHASES.LOGGING end
+    broker._phaseLOGGING = function() return ExecBroker.PHASES.ALLOCATING end
+    broker._phaseALLOCATING = function() return ExecBroker.PHASES.TRANSFERRING end
+    broker._phaseTRANSFERRING = function() return ExecBroker.PHASES.BUFFERING end
+    broker._transmitTelemetry = function() end
+    broker._lastHeartbeat = math.huge
+    return broker
+  end
+
+  local function tracePhases(broker)
+    local phases = { broker:getPhase() }
+    for _ = 1, 4 do
+      broker:tick()
+      table.insert(phases, broker:getPhase())
+    end
+    return table.concat(phases, ",")
+  end
+
+  local legacy = makeBroker(false)
+  local shared = makeBroker(true)
+  Assert.equal(tracePhases(legacy), tracePhases(shared),
+    "Shared dispatch preserves broker phase transitions")
+  Assert.equal(legacy:getMachine("lane-1"):getStatus(),
+    shared:getMachine("lane-1"):getStatus(),
+    "Flag is passed to MachineNode without changing status")
 end
 Assert.endTest()
 

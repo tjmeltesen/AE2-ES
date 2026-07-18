@@ -96,6 +96,7 @@ ExecBroker.DEFAULT_MODULES = {
 --   pollInterval     — number, seconds between buffer polls (default 0.5)
 --   heartbeatInterval— number, seconds between telemetry broadcasts (default 2.0)
 --   debounceWindow   — number, BufferSnapshot stability window (default 1.5)
+--   useStateMachine  — boolean, opt into shared state-machine dispatch (default false)
 -- @return ExecBroker instance
 function ExecBroker.new(config)
   assert(config ~= nil, "ExecBroker requires a config table")
@@ -166,6 +167,7 @@ function ExecBroker.new(config)
           machineType = "gt_machine",
           hardwareAddress = machineAddr,
           laneId = laneId,
+          useStateMachine = config.useStateMachine == true,
         })
       else
         node = { address = machineAddr, laneId = laneId }
@@ -222,6 +224,7 @@ function ExecBroker.new(config)
     _lastHeartbeat    = 0,
     _tickCount        = 0,
     _running          = true,
+    _useStateMachine  = config.useStateMachine == true,
 
     -- Active jobs: { [laneId] = { manifest, phase, assignedAt } }
     _activeJobs       = {},
@@ -238,6 +241,35 @@ function ExecBroker.new(config)
     _eventPull        = config.eventPull,     -- function(timeout) -> signal, ...
     _eventPullFiltered= config.eventPullFiltered,
   }, ExecBroker)
+
+  if self._useStateMachine then
+    local StateMachine = safeRequire("lib.state_machine")
+    assert(StateMachine ~= nil, "ExecBroker: shared state machine could not be loaded")
+    self._stateMachine = StateMachine.new(self._phase, self)
+    self._stateMachine
+      :addState(ExecBroker.PHASES.BUFFERING, {
+        update = function(broker, pollResult)
+          return broker:_phaseBUFFERING(pollResult)
+        end,
+      })
+      :addState(ExecBroker.PHASES.LOGGING, {
+        update = function(broker)
+          return broker:_phaseLOGGING()
+        end,
+      })
+      :addState(ExecBroker.PHASES.ALLOCATING, {
+        update = function(broker)
+          return broker:_phaseALLOCATING()
+        end,
+      })
+      :addState(ExecBroker.PHASES.TRANSFERRING, {
+        update = function(broker)
+          return broker:_phaseTRANSFERRING()
+        end,
+      })
+      :addState(ExecBroker.PHASES.PROCESSING, {})
+      :addState(ExecBroker.PHASES.CLEANUP, {})
+  end
 
   -- Auto-create bufferFeeder from ME Controller if not provided
   -- (config loaded from disk has address but no feeder function)
@@ -1128,17 +1160,21 @@ function ExecBroker:tick()
   self:_phasePROCESSING()
   self:_phaseCLEANUP()
 
-  -- Serialized front-end intake pipeline
+  -- Serialized front-end intake pipeline. The shared state machine is opt-in
+  -- until its behavior has soaked alongside the legacy dispatcher.
   local nextPhase = self._phase
-
-  if self._phase == ExecBroker.PHASES.BUFFERING then
-    nextPhase = self:_phaseBUFFERING(pollResult)
-  elseif self._phase == ExecBroker.PHASES.LOGGING then
-    nextPhase = self:_phaseLOGGING()
-  elseif self._phase == ExecBroker.PHASES.ALLOCATING then
-    nextPhase = self:_phaseALLOCATING()
-  elseif self._phase == ExecBroker.PHASES.TRANSFERRING then
-    nextPhase = self:_phaseTRANSFERRING()
+  if self._stateMachine then
+    nextPhase = self._stateMachine:update(pollResult)
+  else
+    if self._phase == ExecBroker.PHASES.BUFFERING then
+      nextPhase = self:_phaseBUFFERING(pollResult)
+    elseif self._phase == ExecBroker.PHASES.LOGGING then
+      nextPhase = self:_phaseLOGGING()
+    elseif self._phase == ExecBroker.PHASES.ALLOCATING then
+      nextPhase = self:_phaseALLOCATING()
+    elseif self._phase == ExecBroker.PHASES.TRANSFERRING then
+      nextPhase = self:_phaseTRANSFERRING()
+    end
   end
 
   -- Record phase transition

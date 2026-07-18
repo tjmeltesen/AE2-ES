@@ -24,7 +24,7 @@ lua = LuaRuntime(unpack_returned_tuples=True)
 
 # Set up package paths so Lua require() works
 lua.execute("""
-    package.path = "./src/?.lua;./?.lua;./tests/?.lua;./tests/?/init.lua;" .. package.path
+    package.path = "./src/?.lua;./lib/?.lua;./?.lua;./tests/?.lua;./tests/?/init.lua;" .. package.path
 """)
 
 # Provide bit32 for LuaJIT (which doesn't have it natively)
@@ -91,6 +91,7 @@ test_files = [
     "tests.test_integration",
     "tests.test_soak",
     "tests.test_timeslicescheduler",
+    "tests.test_state_machine",
     "tests.test_state_transitions",
     "tests.test_profiler",
     "tests.unit.test_config_ui",
