@@ -91,6 +91,7 @@ test_files = [
     "tests.test_integration",
     "tests.test_soak",
     "tests.test_timeslicescheduler",
+    "tests.test_program_framework",
     "tests.test_state_machine",
     "tests.test_state_transitions",
     "tests.test_bounded_list",

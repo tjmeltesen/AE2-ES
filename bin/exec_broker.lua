@@ -1,8 +1,6 @@
 -- Production launcher for the AE2-ES Exec Broker.
 
 local ConfigUI = require("src.config_ui")
-local ExecBroker = require("src.exec_broker")
-local BrokerLogger = require("src.broker_logger")
 
 local configUI = ConfigUI.new()
 local config, loadErr = configUI:loadConfig()
@@ -22,24 +20,27 @@ if not config then
 end
 
 print("Starting Exec Broker: " .. tostring(config.brokerId))
-local broker = ExecBroker.new(config)
-local cleanupListeners = function() end
-local eventOk, eventApi = pcall(require, "event")
-if eventOk then
-  local eventLogger = BrokerLogger.new(tostring(config.brokerId) .. ":events")
-  cleanupListeners = eventLogger:attachEventListeners(eventApi)
-end
+if config.useProgramFramework ~= true then
+  require("bin.exec_broker_legacy").run(configUI:buildExecConfig())
+else
+  local ProgramFramework = require("lib.program_framework")
+  local Config = require("config")
+  local BrokerLogger = require("src.broker_logger")
+  local broker, err = Config.loadBroker(configUI._configPath)
+  if not broker then error("Could not construct Exec Broker: " .. tostring(err)) end
 
-local ran, ok, err = xpcall(function()
-  return broker:run()
-end, function(runErr)
-  return tostring(runErr)
-end)
-cleanupListeners()
+  local framework = ProgramFramework.new({ pollInterval = config.pollInterval })
+  framework:registerInit(function()
+    local event = require("event")
+    local logger = BrokerLogger.new(tostring(config.brokerId) .. ":events")
+    return logger:attachEventListeners(event)
+  end)
+  framework:registerLoop(function(signal)
+    if signal[1] == "interrupted" then return false end
+    return broker:tick()
+  end)
+  framework:registerShutdown(function() broker:stop() end)
 
-if not ran then
-  error(ok)
-end
-if ok == false then
-  error("Exec Broker stopped with an error: " .. tostring(err))
+  local ok, frameworkErr = framework:start()
+  if not ok then error("Exec Broker stopped with an error: " .. tostring(frameworkErr)) end
 end

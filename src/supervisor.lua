@@ -152,6 +152,7 @@ function Supervisor.new(config)
     _queue = TelemetryQueue.new(cfg.maxQueueSize, cfg.queueTrimTarget),
     _activeBrokers = {},
     _running = false,
+    _stopped = false,
     _consumers = {},
     _stats = {
       startTime = 0,
@@ -164,6 +165,57 @@ function Supervisor.new(config)
     _log = BoundedList.new(cfg.maxLogEntries),
     _logIndex = 0,
   }, Supervisor)
+end
+
+--- Initialize the subscriber without taking ownership of event.pull().
+--- Used by lib.program_framework; legacy start() retains the blocking loop.
+function Supervisor:initialize()
+  if self._running then return false, "supervisor already running" end
+  local ok, err = self:_initModem()
+  if not ok then return false, err end
+
+  self._running = true
+  self._stopped = false
+  self._stats.startTime = computer.uptime()
+  self:_logMessage("INFO", "Supervisor event loop started")
+  return true, nil
+end
+
+--- Process one event supplied by an external event-loop owner.
+---@param signal table Event arguments as returned by event.pull()
+---@return boolean Whether the supervisor should continue running
+function Supervisor:handleEvent(signal)
+  local signalName = signal[1]
+  if signalName == "modem_message" then
+    local _, _, fromAddr, port, _, payload = table.unpack(signal)
+    if port == self._config.supervisorPort then
+      self:_processMessage(fromAddr, port, payload)
+    end
+  elseif signalName == "interrupted" then
+    self:_logMessage("INFO", "Interrupt signal received, shutting down")
+    self._running = false
+  elseif signalName == "key_down" then
+    local char = signal[3]
+    if char == 113 then
+      self:_logMessage("INFO", "User requested shutdown (q key)")
+      self._running = false
+    elseif char == 115 then
+      self:printStatus()
+    elseif char == 99 then
+      local cleared = self._queue:clear()
+      self:_logMessage("INFO", string.format("Queue cleared (%d entries)", cleared))
+    end
+  end
+  return self._running
+end
+
+--- Release modem resources once after either legacy or framework execution.
+function Supervisor:shutdown()
+  if self._stopped then return end
+  self._stopped = true
+  self._running = false
+  self:_closeModem()
+  self:_logMessage("INFO", "Supervisor stopped")
 end
 
 --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
@@ -331,19 +383,8 @@ end
 --- Start the main event loop. Blocks until interrupted or stop() is called.
 --- @return boolean success, string|nil error
 function Supervisor:start()
-  if self._running then
-    return false, "supervisor already running"
-  end
-
-  -- Initialize modem
-  local ok, err = self:_initModem()
-  if not ok then
-    return false, err
-  end
-
-  self._running = true
-  self._stats.startTime = computer.uptime()
-  self:_logMessage("INFO", "Supervisor event loop started")
+  local ok, err = self:initialize()
+  if not ok then return false, err end
 
   -- Periodic health check timer (fires every healthCheckInterval seconds)
   local healthTimer = event.timer(self._config.healthCheckInterval, function()
@@ -355,45 +396,12 @@ function Supervisor:start()
   -- This is the non-blocking architecture: no polling, no busy-waiting
   while self._running do
     local signal = {event.pull()}
-    local signalName = signal[1]
-
-    if signalName == "modem_message" then
-      -- modem_message arguments:
-      --   (_, _, fromAddr, port, distance, ...payload...)
-      local _, _, fromAddr, port, _, payload = table.unpack(signal)
-
-      -- Filter to our port only (modem_message arrives for all open ports)
-      if port == self._config.supervisorPort then
-        self:_processMessage(fromAddr, port, payload)
-      end
-
-    elseif signalName == "interrupted" then
-      -- Ctrl+C or shutdown signal from the OS
-      self:_logMessage("INFO", "Interrupt signal received, shutting down")
-      self._running = false
-
-    elseif signalName == "key_down" then
-      -- Keyboard shortcuts for interactive control
-      -- signal[3] = char code, signal[4] = key code
-      local char = signal[3]
-      if char == 113 then         -- 'q' key: quit
-        self:_logMessage("INFO", "User requested shutdown (q key)")
-        self._running = false
-      elseif char == 115 then     -- 's' key: print status
-        self:printStatus()
-      elseif char == 99 then      -- 'c' key: clear queue
-        local cleared = self._queue:clear()
-        self:_logMessage("INFO", string.format(
-          "Queue cleared (%d entries)", cleared
-        ))
-      end
-    end
+    self:handleEvent(signal)
   end
 
   -- Cleanup
   event.cancel(healthTimer)
-  self:_closeModem()
-  self:_logMessage("INFO", "Supervisor stopped")
+  self:shutdown()
   return true, nil
 end
 
