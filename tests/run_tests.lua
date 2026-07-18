@@ -15,6 +15,7 @@ local testFiles = {
   "tests.test_soak",
   "tests.test_timeslicescheduler",
   "tests.test_state_transitions",
+  "tests.test_hal_sensor_parser",
   "tests.test_profiler",
   "tests.unit.test_config_ui",
   "tests.unit.test_supervisor_config_ui",

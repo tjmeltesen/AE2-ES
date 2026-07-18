@@ -39,6 +39,8 @@ local FAULT_REGISTRY = {
     isRepairable = true, guidance = "Inspect machine GUI for specific problem details; resolve before resuming" },
   [11] = { severity = S.CRITICAL, message = "Incomplete Structure — multiblock structure is missing required blocks",
     isRepairable = true, guidance = "Verify all hatches, casings, and structural blocks are correctly placed" },
+  [12] = { severity = S.WARNING, message = "Sensor Data Warning — machine sensor output could not be parsed",
+    isRepairable = false, guidance = "Inspect the machine sensor or adapter output if this warning persists" },
 }
 
 local function registryEntry(code)
@@ -111,6 +113,13 @@ function MaintenanceReport:reportFault(code, description)
   self.faultCode = code
   self.isRepairable = self:isFaultRepairable(code)
   self:logToHistory({ code = code, description = description or "" })
+end
+
+--- Record a non-blocking maintenance observation without changing fault state.
+-- @param code         number
+-- @param description  string|nil
+function MaintenanceReport:reportAdvisory(code, description)
+  self:logToHistory({ code = code or 0, description = description or "" })
 end
 
 function MaintenanceReport:clearFault(resolutionNote)

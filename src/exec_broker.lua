@@ -925,19 +925,33 @@ function ExecBroker:_checkProcessingJob(laneId, active)
   local laneCfg = self._machineTransposers[laneId]
   if laneCfg then
     local health = self._hal:checkMaintenanceState(machine, laneCfg.transposerAddr, laneCfg.pull)
+    local report = self._reports[laneId]
+    if health and report then
+      for _, advisory in ipairs(health.advisories or {}) do
+        report:reportAdvisory(advisory.code, advisory.description)
+      end
+    end
     if health and health.faulted then
       if self._logger then
         self._logger:warn("PROCESSING: lane " .. laneId .. " health check found " .. tostring(#health.faults) .. " faults")
       end
-      -- Log all detected faults
+      local hasBlockingFault = false
       for _, fault in ipairs(health.faults) do
-        --self._reports[addr]:reportFault(fault.code, fault.description)
-        self._reports[laneId]:reportFault(fault.code, fault.description)
+        if fault.advisory then
+          if report then report:reportAdvisory(fault.code, fault.description) end
+        else
+          hasBlockingFault = true
+          if report then report:reportFault(fault.code, fault.description) end
+        end
       end
-      manifest:fault("Health check failed")
-      self._stats.jobsFaulted = self._stats.jobsFaulted + 1
-      active.phase = ExecBroker.PHASES.CLEANUP
-      return "fault"
+      -- Sensor maintenance is reported but intentionally does not block job
+      -- execution or future allocation during this trial.
+      if hasBlockingFault then
+        manifest:fault("Health check failed")
+        self._stats.jobsFaulted = self._stats.jobsFaulted + 1
+        active.phase = ExecBroker.PHASES.CLEANUP
+        return "fault"
+      end
     end
   end
   if self._logger then

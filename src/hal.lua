@@ -59,6 +59,7 @@ HAL.FAULT_PROXY_ERROR       = 8
 HAL.FAULT_NEEDS_MAINTENANCE = 9   -- Maintenance hatch requires attention
 HAL.FAULT_HAS_PROBLEMS      = 10  -- Machine reports "Has Problems"
 HAL.FAULT_INCOMPLETE_STRUCT = 11  -- Multiblock structure incomplete
+HAL.FAULT_SENSOR_PARSE      = 12  -- Sensor information could not be parsed
 
 -- ===========================================================================
 -- Known machine type -> capability mapping
@@ -482,35 +483,59 @@ local function parseEUString(euString)
 end
 
 --- Parse getSensorInformation() lines for known GT machine error states.
--- Uses plain-text matching (no regex) for reliability against arbitrary
--- sensor output. Modifies the result table in place.
+-- Sensor output is advisory during this trial: malformed data produces a
+-- warning instead of propagating an error into the broker loop.
 -- @param sensorLines  table|nil  string array from getSensorInformation()
--- @param result       table      health result table to populate
--- @return number  count of issues found (0 if sensorLines is nil/empty)
-local function parseSensorLines(sensorLines, result)
-  if type(sensorLines) ~= "table" then return 0 end
-  local count = 0
-  for _, line in ipairs(sensorLines) do
-    if type(line) == "string" then
-      if line:find("Shut down due to power loss", 1, true) then
-        result.powerLossShutdown = true
-        count = count + 1
-      end
-      if line:find("Maintenance", 1, true) then
-        result.needsMaintenance = true
-        count = count + 1
-      end
-      if line:find("Has Problems", 1, true) then
-        result.hasProblems = true
-        count = count + 1
-      end
-      if line:find("Incomplete Structure", 1, true) then
-        result.incompleteStructure = true
-        count = count + 1
+-- @return table parsed flags and issueCount
+-- @return string|nil advisory warning when sensor data cannot be parsed
+function HAL:parseSensorData(sensorLines)
+  local parsed = {
+    powerLossShutdown = false,
+    needsMaintenance = false,
+    hasProblems = false,
+    incompleteStructure = false,
+    issueCount = 0,
+  }
+
+  if sensorLines == nil then return parsed end
+  if type(sensorLines) ~= "table" then
+    return parsed, "Sensor data unavailable: expected a table of lines"
+  end
+
+  local ok, err = pcall(function()
+    for _, line in ipairs(sensorLines) do
+      if type(line) == "string" then
+        if line:find("Shut down due to power loss", 1, true) then
+          parsed.powerLossShutdown = true
+          parsed.issueCount = parsed.issueCount + 1
+        end
+        if line:find("Maintenance", 1, true) then
+          parsed.needsMaintenance = true
+          parsed.issueCount = parsed.issueCount + 1
+        end
+        if line:find("Has Problems", 1, true) then
+          parsed.hasProblems = true
+          parsed.issueCount = parsed.issueCount + 1
+        end
+        if line:find("Incomplete Structure", 1, true) then
+          parsed.incompleteStructure = true
+          parsed.issueCount = parsed.issueCount + 1
+        end
       end
     end
+  end)
+
+  if not ok then
+    return {
+      powerLossShutdown = false,
+      needsMaintenance = false,
+      hasProblems = false,
+      incompleteStructure = false,
+      issueCount = 0,
+    }, "Sensor data parsing failed: " .. tostring(err)
   end
-  return count
+
+  return parsed
 end
 
 --- Poll a machine's GT hardware via HAL's proxy cache and push state into
@@ -627,6 +652,7 @@ function HAL:checkMaintenanceState(machineNode, transposerAddr, ifaceSide)
     hasProblems          = false,
     incompleteStructure  = false,
     powerLossShutdown    = false,
+    advisories           = {},
   }
 
   if not machineNode then
@@ -653,7 +679,17 @@ function HAL:checkMaintenanceState(machineNode, transposerAddr, ifaceSide)
   -- =========================================================================
   -- Phase 1: Parse sensor lines for structural / maintenance issues
   -- =========================================================================
-  parseSensorLines(hardwareState.sensorLines, result)
+  local sensorData, sensorWarning = self:parseSensorData(hardwareState.sensorLines)
+  result.powerLossShutdown = sensorData.powerLossShutdown
+  result.needsMaintenance = sensorData.needsMaintenance
+  result.hasProblems = sensorData.hasProblems
+  result.incompleteStructure = sensorData.incompleteStructure
+  if sensorWarning then
+    table.insert(result.advisories, {
+      code = HAL.FAULT_SENSOR_PARSE,
+      description = sensorWarning,
+    })
+  end
 
   if result.powerLossShutdown then
     result.healthScore = result.healthScore - 50
@@ -661,6 +697,7 @@ function HAL:checkMaintenanceState(machineNode, transposerAddr, ifaceSide)
       code        = HAL.FAULT_POWER_STARVATION,
       label       = "Power Loss Shutdown",
       description = "Machine shut down due to power loss — EU drained during operation",
+      advisory    = true,
     })
     table.insert(result.recommendations,
       "Increase EU supply; machine lost power mid-recipe and may have voided inputs")
@@ -674,6 +711,7 @@ function HAL:checkMaintenanceState(machineNode, transposerAddr, ifaceSide)
       code        = HAL.FAULT_INCOMPLETE_STRUCT,
       label       = "Incomplete Structure",
       description = "Multiblock structure is incomplete — machine cannot run",
+      advisory    = true,
     })
     table.insert(result.recommendations,
       "Verify multiblock structure is complete; check all hatches and casings")
@@ -686,6 +724,7 @@ function HAL:checkMaintenanceState(machineNode, transposerAddr, ifaceSide)
       code        = HAL.FAULT_NEEDS_MAINTENANCE,
       label       = "Maintenance Required",
       description = "Maintenance hatch requires attention",
+      advisory    = true,
     })
     table.insert(result.recommendations,
       "Perform maintenance on machine with appropriate tools")
@@ -698,6 +737,7 @@ function HAL:checkMaintenanceState(machineNode, transposerAddr, ifaceSide)
       code        = HAL.FAULT_HAS_PROBLEMS,
       label       = "Machine Has Problems",
       description = "Machine reports unresolved problems",
+      advisory    = true,
     })
     table.insert(result.recommendations,
       "Inspect machine GUI for specific problem details; resolve before resuming")
@@ -950,6 +990,7 @@ function HAL:faultToString(faultCode)
     [HAL.FAULT_NEEDS_MAINTENANCE]  = "Needs Maintenance",
     [HAL.FAULT_HAS_PROBLEMS]       = "Has Problems",
     [HAL.FAULT_INCOMPLETE_STRUCT]  = "Incomplete Structure",
+    [HAL.FAULT_SENSOR_PARSE]       = "Sensor Data Warning",
   }
   return labels[faultCode] or "Unknown (" .. tostring(faultCode) .. ")"
 end
