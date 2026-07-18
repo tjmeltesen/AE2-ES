@@ -772,16 +772,31 @@ function ExecBroker:_transferForJob(addr, active)
   if active._transferStep == "pull" then
     -- Check if there are actually items scheduled for this lane
     if active._transferDbSlots and active._transferDbSlots.items and #active._transferDbSlots.items > 0 then
-      
       -- Execute the pull
       local contents = hal:getInventoryContents(transposerAddr, ifaceSide)
       if contents then
         local moved = hal:drainInventory(transposerAddr, ifaceSide, inputSide)
         self._logger:info(string.format("TRANSFER: lane %s iface→input moved %s items", laneId, tostring(moved)))
-        active._lastMoved = moved
+        if moved and moved > 0 then
+          active._lastMoved = moved
+          active._transferAttempts = nil
+        else
+          active._transferAttempts = (active._transferAttempts or 0) + 1
+          if active._transferAttempts >= 3 then
+            local message = string.format(
+              "TRANSFER: lane %s moved zero items after %d attempts; faulting job",
+              laneId, active._transferAttempts)
+            manifest:fault(message)
+            active.phase = ExecBroker.PHASES.CLEANUP
+            if self._logger then self._logger:warn(message) end
+          end
+          -- Keep the pull step for the next broker tick.  This is deliberately
+          -- tick-driven rather than HAL:transferWithRetry's sleeping retry loop.
+          return
+        end
       end
     end
-    
+
     -- Yield this tick and verify on the next
     active._transferStep = "verify"
     return
