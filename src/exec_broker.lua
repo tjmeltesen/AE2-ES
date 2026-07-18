@@ -67,13 +67,13 @@ end
 
 --- Default module loader — tries to load from package.loaded or require.
 -- Callers can override any module via config.modules.
-local DEFAULT_MODULES = {
-  JobManifest        = function() return safeRequire("JobManifest") end,
+ExecBroker.DEFAULT_MODULES = {
+  JobManifest        = function() return safeRequire("src.jobmanifest") end,
   MachineNode        = function() return safeRequire("src.MachineNode") end,
   BufferSnapshot     = function() return safeRequire("src.BufferSnapshot") end,
-  JobQueue           = function() return safeRequire("JobQueue") end,
+  JobQueue           = function() return safeRequire("src.job_queue") end,
   HAL                = function() return safeRequire("src.hal") end,
-  MaintenanceReport  = function() return safeRequire("MaintenanceReport") end,
+  MaintenanceReport  = function() return safeRequire("src.maintenance_report") end,
   TelemetryPayload   = function() return safeRequire("src.telemetrypayload") end,
 }
 
@@ -105,7 +105,7 @@ function ExecBroker.new(config)
 
   -- Load modules (config overrides default loaders)
   local M = {}
-  for name, loader in pairs(DEFAULT_MODULES) do
+  for name, loader in pairs(ExecBroker.DEFAULT_MODULES) do
     if config.modules and config.modules[name] ~= nil then
       M[name] = config.modules[name]
     else

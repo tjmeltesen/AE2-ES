@@ -587,6 +587,9 @@ do
     ui._config.brokerId = "exec-target-broker"
     ui._config.modemAddress = "abcd-1234-modem"
     ui._config.telemetryPort = 999
+    ui._config.controlPort = 1245
+    ui._config.useStateMachine = true
+    ui._config.enableDiscovery = true
     ui._config.machines = { { laneId = "abcd-7890-gtmach", machineAddr = "abcd-7890-gtmach" } }
     ui._config.machineTypes = { ["abcd-7890-gtmach"] = 128 }
     ui._config.pollInterval = 0.25
@@ -598,6 +601,10 @@ do
     assert_not_nil(execCfg, "7.1: Exec config built")
     assert_equal(execCfg.brokerId, "exec-target-broker", "7.1: brokerId passed through")
     assert_equal(execCfg.telemetryPort, 999, "7.1: telemetryPort passed through")
+    assert_equal(execCfg.controlPort, 1245, "7.1: control port passed through")
+    assert_true(execCfg.useStateMachine, "7.1: state-machine flag passed through")
+    assert_true(execCfg.enableDiscovery, "7.1: discovery flag passed through")
+    assert_false(execCfg.enableAutoCrafting, "7.1: unset capability flags remain false")
     assert_equal(execCfg.pollInterval, 0.25, "7.1: pollInterval passed through")
     assert_equal(execCfg.heartbeatInterval, 5.0, "7.1: heartbeatInterval passed through")
     assert_equal(execCfg.debounceWindow, 2.0, "7.1: debounceWindow passed through")

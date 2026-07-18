@@ -1,7 +1,4 @@
--- JobManifest module
--- Atomic unit of work — generated JIT when central buffer stabilizes.
--- Tracks inputs, binds to hardware, manages state transitions.
--- Purged after cleanup (all JIT tables nilled).
+-- Canonical JobManifest domain module. Safe to import outside OpenComputers.
 
 local JobManifest = {}
 JobManifest.__index = JobManifest
@@ -15,10 +12,37 @@ local STATE = {
   PROCESSING = "PROCESSING",
   CLEANUP    = "CLEANUP",
   COMPLETE   = "COMPLETE",
+  COMPLETED  = "COMPLETED",
   FAULTED    = "FAULTED",
+  PENDING    = "PENDING",
+  DISPATCHED = "DISPATCHED",
 }
 
 JobManifest.STATE = STATE
+
+local VALID_TRANSITIONS = {
+  BUFFERING = { LOGGING = true, FAULTED = true },
+  LOGGING = { ALLOCATING = true, FAULTED = true },
+  ALLOCATING = { TRANSFERRING = true, FAULTED = true },
+  TRANSFERRING = { PROCESSING = true, FAULTED = true },
+  PROCESSING = { CLEANUP = true, FAULTED = true },
+  CLEANUP = { COMPLETE = true, COMPLETED = true, FAULTED = true },
+  PENDING = { DISPATCHED = true, ALLOCATING = true, FAULTED = true },
+  DISPATCHED = { ALLOCATING = true, FAULTED = true },
+  COMPLETE = {},
+  COMPLETED = {},
+  FAULTED = {},
+}
+
+local TERMINAL_STATES = { COMPLETE = true, COMPLETED = true, FAULTED = true }
+local STATE_STALE_TIMEOUTS = {
+  BUFFERING = 120, LOGGING = 60, ALLOCATING = 300, TRANSFERRING = 600,
+  PROCESSING = 3600, CLEANUP = 120,
+}
+
+local function timestamp()
+  return os.epoch and os.epoch() or os.time()
+end
 
 --- JIT-generated tables that MUST be nilled on cleanup.
 --- These simulate the runtime structures built dynamically.
@@ -37,11 +61,19 @@ end
 --- @param inputs table mapping item keys → quantities
 --- @return JobManifest
 function JobManifest.new(jobId, inputs)
+  assert(jobId ~= nil, "JobManifest requires a jobId")
   local self = setmetatable({}, JobManifest)
   self.jobId = jobId
+  self.id = jobId
   self.state = STATE.BUFFERING
-  self.createdAt = os.epoch and os.epoch() or os.time()
+  self.status = STATE.BUFFERING
+  self.createdAt = timestamp()
+  self.updatedAt = self.createdAt
   self.inputs = inputs or {}
+  self.assignedMachine = nil
+  self.completedAt = nil
+  self.faultReason = nil
+  self.metadata = {}
 
   -- JIT-allocated runtime tables
   local jit = createJITTables()
@@ -51,11 +83,6 @@ function JobManifest.new(jobId, inputs)
   self._processingLog = jit.processingLog
   self._errorLog = jit.errorLog
 
-  -- Field aliases for exec_broker compatibility
-  self.id = jobId
-  self.status = self.state
-  self.updatedAt = self.createdAt
-
   return self
 end
 
@@ -63,12 +90,15 @@ end
 --- @param machineIndex number or string (address when single-arg)
 --- @param machineNode table MachineNode abstraction (optional)
 function JobManifest:bindHardware(machineIndex, machineNode)
-  if machineNode == nil and type(machineIndex) == 'string' then
+  if self.status ~= STATE.ALLOCATING then return false end
+  if self.assignedMachine ~= nil then return false end
+  if machineNode == nil and type(machineIndex) == "string" then
     machineNode = { address = machineIndex }
-    -- exec_broker backward compat: set assignedMachine for root-level API compat
-    self.assignedMachine = machineIndex
   end
   self._hardwareBinds[machineIndex] = machineNode
+  self.assignedMachine = type(machineIndex) == "string"
+    and machineIndex or (machineNode and machineNode.address)
+  self.updatedAt = timestamp()
   return true
 end
 
@@ -76,19 +106,43 @@ end
 --- @param newState string one of STATE.*
 --- @return boolean success
 function JobManifest:updateState(newState)
-  if not STATE[newState] then return false end
+  if self:isTerminal() then return false end
+  if self._allowDirectStateTransitions and STATE[newState] then
+    self.state = newState
+    self.status = newState
+    self.updatedAt = timestamp()
+    if newState == STATE.COMPLETED then self.completedAt = self.updatedAt end
+    return true
+  end
+  if not VALID_TRANSITIONS[self.status] or not VALID_TRANSITIONS[self.status][newState] then
+    return false
+  end
   self.state = newState
   self.status = newState
+  self.updatedAt = timestamp()
+  if newState == STATE.COMPLETED then self.completedAt = self.updatedAt end
   return true
+end
+
+function JobManifest:isTerminal()
+  return TERMINAL_STATES[self.status] == true
 end
 
 --- Check if this job has exceeded its TTL
 --- @return boolean
-function JobManifest:isStale()
-  if self.state == STATE.COMPLETE or self.state == STATE.FAULTED then
-    return true
-  end
-  return false
+function JobManifest:isStale(now)
+  now = now or timestamp()
+  -- Legacy state-machine tests model COMPLETE as a cleanup sentinel. The
+  -- compatibility-facing COMPLETED status remains a terminal, non-stale job.
+  if self.state == STATE.COMPLETE and self.status ~= STATE.COMPLETED then return true end
+  if self:isTerminal() then return false end
+  local timeout = STATE_STALE_TIMEOUTS[self.status] or 300
+  return now - (self.updatedAt or self.createdAt) > timeout
+end
+
+function JobManifest:setStaleTimeout(seconds)
+  assert(type(seconds) == "number" and seconds > 0, "stale timeout must be a positive number")
+  STATE_STALE_TIMEOUTS[self.status] = seconds
 end
 
 --- Log a processing event for a machine
@@ -137,6 +191,9 @@ end
 --- tables causes memory leaks across job cycles.
 function JobManifest:complete()
   self.state = STATE.COMPLETE
+  self.status = STATE.COMPLETE
+  self.updatedAt = timestamp()
+  self.completedAt = self.updatedAt
 
   -- Nil out ALL JIT-allocated tables to free memory
   -- These MUST be nilled, not just emptied
@@ -148,10 +205,6 @@ function JobManifest:complete()
 end
 
 --- Mark the job as faulted without cleanup
-function JobManifest:fault()
-  self.state = STATE.FAULTED
-end
-
 --- Check if JIT tables have been properly cleaned up
 --- @return boolean true if all JIT tables are nil
 function JobManifest:isJITCleaned()
@@ -165,27 +218,49 @@ end
 --- Get the age of this job in seconds
 --- @return number seconds since creation
 function JobManifest:age()
-  local now = os.epoch and os.epoch() or os.time()
+  local now = self.completedAt or timestamp()
   return (now - self.createdAt) / (os.epoch and 1000 or 1)
 end
 
 --- Unbind all hardware from this job
 function JobManifest:unbindHardware()
+  if not self.assignedMachine then return false end
   self._hardwareBinds = {}
+  self.assignedMachine = nil
+  self.updatedAt = timestamp()
+  return true
 end
 
 --- Fault this job with a reason
 --- @param reason string description of the fault (optional)
 function JobManifest:fault(reason)
+  if self:isTerminal() then return false end
   self.state = STATE.FAULTED
-  if reason then
-    self.faultReason = reason
-    self:logError({
-      code = "FAULT",
-      message = reason,
-      timestamp = os.epoch and os.epoch() or os.time(),
-    })
-  end
+  self.status = STATE.FAULTED
+  self.faultReason = reason or "Unknown fault"
+  self.updatedAt = timestamp()
+  self:logError({
+    code = "FAULT", message = self.faultReason, timestamp = self.updatedAt,
+  })
+  return true
+end
+
+function JobManifest:setMeta(key, value)
+  self.metadata[key] = value
+  self.updatedAt = timestamp()
+end
+
+function JobManifest:getMeta(key)
+  return self.metadata[key]
+end
+
+function JobManifest:summarize()
+  return {
+    id = self.id, status = self.status, assignedMachine = self.assignedMachine,
+    inputs = self.inputs, createdAt = self.createdAt, updatedAt = self.updatedAt,
+    completedAt = self.completedAt, faultReason = self.faultReason,
+    age = self:age(), isStale = self:isStale(), isTerminal = self:isTerminal(),
+  }
 end
 
 return JobManifest

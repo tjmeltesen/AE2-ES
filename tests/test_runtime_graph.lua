@@ -220,4 +220,34 @@ do
 end
 Assert.endTest()
 
+Assert.startTest("root domain shims expose canonical module contracts")
+do
+  local pairsToCheck = {
+    { "JobManifest", "src.jobmanifest", { "new" } },
+    { "JobQueue", "src.job_queue", { "new" } },
+    { "MaintenanceReport", "src.maintenance_report", { "new" } },
+  }
+
+  for _, item in ipairs(pairsToCheck) do
+    local shim = require(item[1])
+    local canonical = require(item[2])
+    Assert.equal(canonical, shim, item[1] .. " returns the canonical module")
+    for _, method in ipairs(item[3]) do
+      Assert.type("function", shim[method], item[1] .. " retains " .. method)
+    end
+  end
+end
+Assert.endTest()
+
+Assert.startTest("broker default module map uses canonical domains")
+do
+  local ExecBroker = require("src.exec_broker")
+  local defaults = ExecBroker.DEFAULT_MODULES
+  Assert.equal(require("src.jobmanifest"), defaults.JobManifest(), "loads canonical JobManifest")
+  Assert.equal(require("src.job_queue"), defaults.JobQueue(), "loads canonical JobQueue")
+  Assert.equal(require("src.maintenance_report"), defaults.MaintenanceReport(),
+    "loads canonical MaintenanceReport")
+end
+Assert.endTest()
+
 return true

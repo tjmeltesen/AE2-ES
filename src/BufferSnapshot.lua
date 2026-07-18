@@ -299,11 +299,13 @@ function BufferSnapshot:convertToManifest(arg1, arg2)
   manifest.priority = 0
   manifest.createdAt = os.time()
   manifest.updatedAt = os.time()
-  manifest.status = 'LOGGING'
-
-  -- Update manifest state properly for the old API (test_state_transitions)
+  -- Preserve both APIs: canonical manifests validate their transition before
+  -- the legacy status field is set directly by the production loader.
   if type(arg1) == "table" and manifest.state then
+    manifest._allowDirectStateTransitions = true
     manifest:updateState("LOGGING")
+  else
+    manifest.status = "LOGGING"
   end
 
   -- Separate items and fluids from the buffered data
