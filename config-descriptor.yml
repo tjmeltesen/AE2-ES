@@ -46,6 +46,15 @@ fields:
   enableRemoteControl:
     type: boolean
     default: false
+  enableRemoteThrottle:
+    type: boolean
+    default: false
+  enableRemoteRestart:
+    type: boolean
+    default: false
+  controlAuthSecret:
+    type: string
+    default: ""
   machines:
     type: list
     default: []

@@ -22,7 +22,13 @@ local BoundedList = require("lib.bounded_list")
 
 local CONFIG = {
   -- Modem listening port (must match exec_broker broadcast port)
-  supervisorPort = 100,
+  supervisorPort = 123,
+  -- Authenticated, opt-in commands only; telemetry is never sent here.
+  controlPort = 124,
+  enableRemoteControl = false,
+  enableRemoteThrottle = false,
+  enableRemoteRestart = false,
+  controlAuthSecret = "",
   -- Maximum events to retain in FIFO queue per consumer poll cycle
   maxQueueSize = 1000,
   -- Queue trim threshold (how many to keep when exceeded)
@@ -164,7 +170,19 @@ function Supervisor.new(config)
     },
     _log = BoundedList.new(cfg.maxLogEntries),
     _logIndex = 0,
+    _controlHandler = nil,
   }, Supervisor)
+end
+
+--- Attach the opt-in authenticated control handler before initialize().
+function Supervisor:setControlHandler(handler)
+  self._controlHandler = handler
+end
+
+--- Send an authenticated, unicast control message to a configured broker.
+function Supervisor:sendControl(address, brokerId, command, fields)
+  if not self._controlHandler then return false, "remote control disabled" end
+  return self._controlHandler:send(address, brokerId, command, fields)
 end
 
 --- Initialize the subscriber without taking ownership of event.pull().
@@ -190,6 +208,8 @@ function Supervisor:handleEvent(signal)
     local _, _, fromAddr, port, _, payload = table.unpack(signal)
     if port == self._config.supervisorPort then
       self:_processMessage(fromAddr, port, payload)
+    elseif self._controlHandler and port == self._config.controlPort then
+      self._controlHandler:handle(fromAddr, port, payload)
     end
   elseif signalName == "interrupted" then
     self:_logMessage("INFO", "Interrupt signal received, shutting down")
@@ -277,6 +297,14 @@ function Supervisor:_initModem()
   if not ok then
     return false, "failed to open port " .. self._config.supervisorPort .. ": " .. tostring(err)
   end
+  if self._controlHandler and self._controlHandler:isEnabled() then
+    local controlOk, controlErr = pcall(self._modem.open, self._config.controlPort)
+    if not controlOk then
+      pcall(self._modem.close, self._config.supervisorPort)
+      return false, "failed to open control port " .. self._config.controlPort .. ": " .. tostring(controlErr)
+    end
+    self._controlHandler:setModem(self._modem)
+  end
 
   self:_logMessage("INFO", string.format(
     "Modem initialized on port %d", self._config.supervisorPort
@@ -288,6 +316,9 @@ end
 function Supervisor:_closeModem()
   if self._modem then
     pcall(self._modem.close, self._config.supervisorPort)
+    if self._controlHandler and self._controlHandler:isEnabled() then
+      pcall(self._modem.close, self._config.controlPort)
+    end
     self:_logMessage("INFO", "Modem port closed")
   end
 end

@@ -272,6 +272,8 @@ function ExecBroker.new(config)
     _bufferFeeder    = config.bufferFeeder,
     _modem           = config.modem,
     _telemetryPort   = config.telemetryPort or 123,
+    _controlPort     = config.controlPort or 124,
+    _controlHandler  = nil,
 
     -- Timing
     _pollInterval     = config.pollInterval or 0.5,
@@ -1667,6 +1669,24 @@ function ExecBroker:tick()
 
   return true
 end
+
+--- Apply a validated remote polling interval without exposing broker internals.
+function ExecBroker:setPollInterval(interval)
+  if type(interval) ~= "number" or interval < 0.1 or interval > 60 then
+    return false, "poll interval outside safe bounds"
+  end
+  self._pollInterval = interval
+  if self._logger then
+    self._logger:warn("Remote control updated poll interval to " .. tostring(interval))
+  end
+  return true
+end
+
+--- Attach the opt-in control handler; launchers own the modem port lifecycle.
+function ExecBroker:setControlHandler(handler)
+  self._controlHandler = handler
+end
+
 --- Run the main event loop (cooperative multitasking via event.pull).
 -- This is the production entry point. Uses the OC event system.
 -- For testing without OC, call tick() directly in a loop.
@@ -1700,10 +1720,16 @@ function ExecBroker:run(maxTicks)
     -- Otherwise, yield via os.sleep(0) or os.execute("sleep 0.001")
     if event and self._eventPull then
       -- Custom event pull (injectable for testing)
-      self._eventPull(self._pollInterval)
+      local signal = {self._eventPull(self._pollInterval)}
+      if self._controlHandler and signal[1] == "modem_message" then
+        self._controlHandler:handle(signal[3], signal[4], signal[6])
+      end
     elseif event and type(event.pull) == "function" then
       -- Real OC environment
-      event.pull(self._pollInterval)
+      local signal = {event.pull(self._pollInterval)}
+      if self._controlHandler and signal[1] == "modem_message" then
+        self._controlHandler:handle(signal[3], signal[4], signal[6])
+      end
     else
       -- Vanilla Lua fallback
       os.execute("sleep " .. tostring(self._pollInterval))

@@ -55,8 +55,14 @@ local CONFIG_PATH = "/home/ae2es_supervisor.cfg"
 
 -- Default configuration (mirrors supervisor.lua CONFIG defaults)
 local DEFAULT_CONFIG = {
-    supervisorPort     = 100,
+    supervisorPort     = 123,
+    supervisorId       = "supervisor",
     useProgramFramework = false,
+    controlPort        = 124,
+    enableRemoteControl = false,
+    enableRemoteThrottle = false,
+    enableRemoteRestart = false,
+    controlAuthSecret = "",
     maxQueueSize       = 1000,
     queueTrimTarget    = 500,
     maxLogEntries      = 200,
@@ -977,7 +983,7 @@ end
 --- Edit a specific modem field by index (1-5).
 function ConfigUI:_edit_modem_field(idx)
     local fields = {
-        { key = "supervisorPort",     label = "Supervisor port",     default = 100 },
+        { key = "supervisorPort",     label = "Supervisor port",     default = 123 },
         { key = "maxQueueSize",       label = "Max queue size",      default = 1000 },
         { key = "queueTrimTarget",    label = "Queue trim target",   default = 500 },
         { key = "healthCheckInterval", label = "Health check interval", default = 5.0 },
