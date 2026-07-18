@@ -1,0 +1,78 @@
+schemaVersion: 1
+description: >-
+  Persisted Exec Broker configuration fields consumed by src/config_ui.lua.
+  This descriptor produces ae2es_broker.cfg data; it is not the DI config.lua
+  module introduced by the program-framework phase.
+fields:
+  brokerId:
+    type: string
+    default: ""
+  modemAddress:
+    type: string
+    default: ""
+  telemetryPort:
+    type: integer
+    default: 123
+  controlPort:
+    type: integer
+    default: 124
+  useStateMachine:
+    type: boolean
+    default: false
+  useProgramFramework:
+    type: boolean
+    default: false
+  useTimeSliceScheduler:
+    type: boolean
+    default: false
+  useCoroutineTransfer:
+    type: boolean
+    default: false
+  enableAutoCrafting:
+    type: boolean
+    default: false
+  enableDiscovery:
+    type: boolean
+    default: false
+  enablePersistence:
+    type: boolean
+    default: false
+  enableRemoteControl:
+    type: boolean
+    default: false
+  machines:
+    type: list
+    default: []
+  machineTypes:
+    type: map
+    default: {}
+  redstoneAddress:
+    type: string
+    default: ""
+  redstoneSide:
+    type: integer
+    default: 5
+  meControllerAddr:
+    type: string
+    default: ""
+  databaseAddr:
+    type: string
+    default: ""
+  machineTransposers:
+    type: map
+    default: {}
+  pollInterval:
+    type: number
+    default: 0.5
+  heartbeatInterval:
+    type: number
+    default: 2.0
+  debounceWindow:
+    type: number
+    default: 1.5
+  queueSize:
+    type: integer
+    default: 64
+  dbSlots:
+    type: integer
+    default: 9

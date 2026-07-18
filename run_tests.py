@@ -156,6 +156,17 @@ if dashboard_result.returncode != 0:
     print(f"  ERROR in dashboard suite: exit code {dashboard_result.returncode}")
     all_passed = False
 
+# The generator is a Python CLI, but its output must remain loadable by
+# ConfigUI. Keep that contract in the default Tier 1 suite.
+generator_result = subprocess.run(
+    [sys.executable, os.path.join(project_root, "tests", "test_generate_config.py")],
+    cwd=project_root,
+    check=False,
+)
+if generator_result.returncode != 0:
+    print(f"  ERROR in config generator suite: exit code {generator_result.returncode}")
+    all_passed = False
+
 # Print summary
 try:
     success = lua.eval('require("tests.helpers.assertions").summary()')
