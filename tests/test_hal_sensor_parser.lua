@@ -44,6 +44,36 @@ do
 end
 Assert.endTest()
 
+Assert.startTest("HAL:requestCraft queries a matching craftable and requests its deficit")
+do
+  local requestedAmount = nil
+  local hal = HAL:new()
+  hal._proxyCache["me-controller"] = {
+    timestamp = os.time(),
+    proxy = {
+      getCraftables = function(filter)
+        if filter.name == "minecraft:iron_ingot" then
+          return {
+            {
+              request = function(amount)
+                requestedAmount = amount
+                return { id = "crafting-job" }
+              end,
+            },
+          }
+        end
+        return {}
+      end,
+    },
+  }
+
+  local ok, job = hal:requestCraft("me-controller", { name = "minecraft:iron_ingot" }, 32)
+  Assert.isTrue(ok, "a matching craftable accepts a request")
+  Assert.equal(32, requestedAmount, "the helper forwards only the missing amount")
+  Assert.equal("crafting-job", job.id, "the crafting job is returned to the caller")
+end
+Assert.endTest()
+
 if arg and arg[0] and arg[0]:match("test_hal_sensor_parser%.lua$") then
   os.exit(Assert.summary() and 0 or 1)
 end

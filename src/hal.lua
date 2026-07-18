@@ -465,6 +465,54 @@ function HAL:getMEContents(meControllerAddr)
   return { items = items, fluids = fluids }
 end
 
+--- Find the first craftable matching an ME-network item filter.
+-- @param meControllerAddr string  CommonNetworkAPI component address
+-- @param filter table  item filter accepted by getCraftables()
+-- @return table|nil craftable, or nil + error
+function HAL:getCraftable(meControllerAddr, filter)
+  self:clearError()
+  if type(filter) ~= "table" then
+    return nil, "HAL:getCraftable() — filter must be a table"
+  end
+
+  local proxy = self:getProxy(meControllerAddr)
+  if not proxy then return nil, self._lastError end
+  if type(proxy.getCraftables) ~= "function" then
+    return nil, "HAL:getCraftable() — component does not support getCraftables"
+  end
+
+  local ok, craftables = pcall(proxy.getCraftables, filter)
+  if not ok or type(craftables) ~= "table" then
+    return nil, "HAL:getCraftable() — getCraftables failed"
+  end
+
+  local craftable = craftables[1]
+  if type(craftable) ~= "table" or type(craftable.request) ~= "function" then
+    return nil, "HAL:getCraftable() — no craftable matches filter"
+  end
+  return craftable
+end
+
+--- Request a positive amount from a matching ME-network crafting pattern.
+-- @param meControllerAddr string  CommonNetworkAPI component address
+-- @param filter table  item filter accepted by getCraftables()
+-- @param amount number  amount to craft
+-- @return boolean, table|string  true + crafting job, or false + error
+function HAL:requestCraft(meControllerAddr, filter, amount)
+  if type(amount) ~= "number" or amount <= 0 then
+    return false, "HAL:requestCraft() — amount must be positive"
+  end
+
+  local craftable, err = self:getCraftable(meControllerAddr, filter)
+  if not craftable then return false, err end
+
+  local ok, job = pcall(craftable.request, amount)
+  if not ok or not job then
+    return false, "HAL:requestCraft() — craft request failed"
+  end
+  return true, job
+end
+
 -- ===========================================================================
 -- Maintenance state checking (checkMaintenanceState)
 -- ===========================================================================

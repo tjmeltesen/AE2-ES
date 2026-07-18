@@ -288,6 +288,8 @@ do
     assert_equal(config.redstoneAddress, "", "2.1: redstoneAddress empty")
     assert_equal(config.redstoneSide, 5, "2.1: redstoneSide defaults to 5")
     assert_equal(config.meControllerAddr, "", "2.1: meControllerAddr empty")
+    assert_false(config.enableAutoCrafting, "2.1: auto-crafting remains opt-in")
+    assert_equal(#config.autoCraftInputs, 0, "2.1: auto-craft whitelist is empty")
     assert_false(config.enableDiscovery, "2.1: discovery remains opt-in")
 
     -- Test 2.2: redstoneSide has a default
@@ -590,6 +592,8 @@ do
     ui._config.telemetryPort = 999
     ui._config.controlPort = 1245
     ui._config.useStateMachine = true
+    ui._config.enableAutoCrafting = true
+    ui._config.autoCraftInputs = { { name = "minecraft:iron_ingot", amount = 64 } }
     ui._config.enableDiscovery = true
     ui._config.machines = { { laneId = "abcd-7890-gtmach", machineAddr = "abcd-7890-gtmach" } }
     ui._config.machineTypes = { ["abcd-7890-gtmach"] = 128 }
@@ -605,7 +609,9 @@ do
     assert_equal(execCfg.controlPort, 1245, "7.1: control port passed through")
     assert_true(execCfg.useStateMachine, "7.1: state-machine flag passed through")
     assert_true(execCfg.enableDiscovery, "7.1: discovery flag passed through")
-    assert_false(execCfg.enableAutoCrafting, "7.1: unset capability flags remain false")
+    assert_true(execCfg.enableAutoCrafting, "7.1: auto-crafting flag passed through")
+    assert_equal(execCfg.autoCraftInputs[1].name, "minecraft:iron_ingot",
+        "7.1: auto-craft whitelist passed through")
     assert_equal(execCfg.pollInterval, 0.25, "7.1: pollInterval passed through")
     assert_equal(execCfg.heartbeatInterval, 5.0, "7.1: heartbeatInterval passed through")
     assert_equal(execCfg.debounceWindow, 2.0, "7.1: debounceWindow passed through")

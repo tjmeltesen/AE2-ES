@@ -31,6 +31,9 @@ fields:
   enableAutoCrafting:
     type: boolean
     default: false
+  autoCraftInputs:
+    type: list
+    default: []
   enableDiscovery:
     type: boolean
     default: false

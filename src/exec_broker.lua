@@ -101,6 +101,8 @@ ExecBroker.DEFAULT_MODULES = {
 --   timeSliceBudget  — number, seconds available to broker work per tick
 --   useCoroutineTransfer — boolean, opt into framework-tracked lane transfers
 --   threadRegistry   — framework object exposing registerThread(callback)
+--   enableAutoCrafting — boolean, opt into whitelisted ME auto-crafting
+--   autoCraftInputs  — array of {name, amount, damage?, nbt?} desired buffer minimums
 -- @return ExecBroker instance
 function ExecBroker.new(config)
   assert(config ~= nil, "ExecBroker requires a config table")
@@ -248,6 +250,11 @@ function ExecBroker.new(config)
     _useCoroutineTransfer = config.useCoroutineTransfer == true,
     _threadRegistry    = config.threadRegistry,
     _transferTimeout   = config.transferTimeout or 30,
+    _enableAutoCrafting = config.enableAutoCrafting == true,
+    _autoCraftInputs   = config.autoCraftInputs or {},
+    _autoCraftPollCount = 0,
+    _autoCraftFailures = {},
+    _autoCraftCircuits = {},
 
     -- Active jobs: { [laneId] = { manifest, phase, assignedAt } }
     _activeJobs       = {},
@@ -335,6 +342,54 @@ end
 --- Poll the central buffer via bufferFeeder and feed into snapshot.
 -- Called from tick() when the poll throttle fires, NOT every tick.
 -- @return boolean|nil  true if snapshot became stable, false if unstable, nil if skipped
+local function itemCount(items, input)
+  local count = 0
+  for _, item in ipairs(items or {}) do
+    if item.name == input.name and
+        (input.damage == nil or item.damage == input.damage) and
+        (input.nbt == nil or item.nbt == input.nbt) then
+      count = count + (item.size or item.amount or 0)
+    end
+  end
+  return count
+end
+
+--- Request configured item deficits from the ME network on a bounded cadence.
+--- A request is considered unfulfilled until a later check observes enough stock.
+--- After three unfulfilled requests for one item, stop requesting it until stock arrives.
+-- @param bufferData table  ME contents returned by the buffer feeder
+function ExecBroker:_checkAutoCrafting(bufferData)
+  if not self._enableAutoCrafting or self._meControllerAddr == "" then return end
+
+  self._autoCraftPollCount = self._autoCraftPollCount + 1
+  if self._autoCraftPollCount % 5 ~= 0 then return end
+
+  for _, input in ipairs(self._autoCraftInputs) do
+    local target = tonumber(input.amount or input.size)
+    if type(input.name) == "string" and input.name ~= "" and target and target > 0 then
+      local key = input.name
+      local available = itemCount(bufferData.items, input)
+      if available >= target then
+        self._autoCraftFailures[key] = nil
+        self._autoCraftCircuits[key] = nil
+      elseif not self._autoCraftCircuits[key] then
+        local filter = { name = input.name, damage = input.damage, nbt = input.nbt }
+        local requested, err = self._hal:requestCraft(self._meControllerAddr, filter, target - available)
+        local failures = (self._autoCraftFailures[key] or 0) + 1
+        self._autoCraftFailures[key] = failures
+        if failures >= 3 then
+          self._autoCraftCircuits[key] = true
+          if self._logger then
+            self._logger:warn("AUTO_CRAFT: circuit open for " .. input.name)
+          end
+        elseif not requested and self._logger then
+          self._logger:warn("AUTO_CRAFT: request failed for " .. input.name .. ": " .. tostring(err))
+        end
+      end
+    end
+  end
+end
+
 function ExecBroker:_pollBuffer()
   if not self._bufferFeeder then return nil end
   local bufferData = self._bufferFeeder()
@@ -342,6 +397,7 @@ function ExecBroker:_pollBuffer()
     if self._logger then self._logger:warn("BUFFERING: bufferFeeder returned non-table: " .. type(bufferData)) end
     return nil
   end
+  self:_checkAutoCrafting(bufferData)
   return self._snapshot:update(bufferData)
 end
 
