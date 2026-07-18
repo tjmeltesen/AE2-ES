@@ -102,6 +102,7 @@ test_files = [
     "tests.test_machine_discovery",
     "tests.test_hal_sensor_parser",
     "tests.test_auto_crafting",
+    "tests.test_persistence",
     "tests.test_profiler",
     "tests.unit.test_config_ui",
     "tests.unit.test_supervisor_config_ui",

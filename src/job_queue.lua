@@ -90,6 +90,31 @@ function JobQueue:peek()
   return snapshot
 end
 
+--- Return the complete queue for persistence. Callers must treat the returned
+-- manifests as data only and never mutate the live queue through it.
+function JobQueue:toPersistence()
+  local jobs = {}
+  for index, job in ipairs(self._queue) do
+    jobs[index] = job
+  end
+  return jobs
+end
+
+--- Restore persisted jobs through push so queue capacity and ordering rules
+-- remain identical to normal intake.
+function JobQueue:restorePersistence(jobs)
+  if type(jobs) ~= "table" then return false, "jobs must be a table" end
+  local restored = 0
+  for _, job in ipairs(jobs) do
+    if type(job) ~= "table" or type(job.id) ~= "string" then
+      return false, "invalid persisted job"
+    end
+    if not self:push(job) then return false, "persisted queue is full" end
+    restored = restored + 1
+  end
+  return true, restored
+end
+
 function JobQueue:length() return #self._queue end
 function JobQueue:isFull() return #self._queue >= self._maxSize end
 function JobQueue:getMaxSize() return self._maxSize end

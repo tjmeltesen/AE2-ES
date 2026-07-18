@@ -111,6 +111,9 @@ ExecBroker.DEFAULT_MODULES = {
 --   enableDiscovery  — boolean, opt into runtime GT machine discovery
 --   minMachines      — number, minimum machines required when discovery starts
 --   componentApi     — injectable OpenComputers component API for discovery
+--   enablePersistence — opt into versioned crash-recovery persistence
+--   persistence      — injectable persistence instance
+--   persistenceDirectory — optional directory for persisted broker state
 -- @return ExecBroker instance
 function ExecBroker.new(config)
   assert(config ~= nil, "ExecBroker requires a config table")
@@ -226,6 +229,18 @@ function ExecBroker.new(config)
       "ExecBroker: time-slice scheduler requires reset() and remaining()")
   end
 
+  local persistence = nil
+  if config.enablePersistence == true then
+    persistence = config.persistence
+    if persistence == nil then
+      local Persistence = safeRequire("lib.persistence")
+      assert(Persistence ~= nil, "ExecBroker: persistence module could not be loaded")
+      persistence = Persistence.new({ directory = config.persistenceDirectory })
+    end
+    assert(type(persistence.save) == "function" and type(persistence.load) == "function",
+      "ExecBroker: persistence requires save() and load()")
+  end
+
   local self = setmetatable({
     -- Identity
     _brokerId        = config.brokerId,
@@ -277,6 +292,11 @@ function ExecBroker.new(config)
     _autoCraftPollCount = 0,
     _autoCraftFailures = {},
     _autoCraftCircuits = {},
+    _enablePersistence = config.enablePersistence == true,
+    _persistence       = persistence,
+    _persistenceKey    = config.persistenceKey or ("broker-" .. config.brokerId:gsub("[^%w%._%-]", "_")),
+    _lastPersistence   = 0,
+    _persistenceInterval = config.persistenceInterval or 30,
 
     -- Active jobs: { [laneId] = { manifest, phase, assignedAt } }
     _activeJobs       = {},
@@ -360,6 +380,9 @@ function ExecBroker.new(config)
     assert(#self._machineList >= self._minMachines,
       string.format("ExecBroker: requires minMachines=%d, found %d",
         self._minMachines, #self._machineList))
+  end
+  if self._enablePersistence then
+    self:_restorePersistence()
   end
 
   return self
@@ -1460,6 +1483,123 @@ end
 -- Main event loop
 -- ===========================================================================
 
+local PERSISTENCE_SCHEMA_VERSION = 1
+
+local function persistedManifest(manifest)
+  return {
+    id = manifest.id or manifest.jobId,
+    jobId = manifest.jobId or manifest.id,
+    inputs = manifest.inputs or {},
+    priority = manifest.priority or 0,
+    createdAt = manifest.createdAt,
+    updatedAt = manifest.updatedAt,
+    metadata = manifest.metadata or {},
+    faultReason = manifest.faultReason,
+    assignedMachine = manifest.assignedMachine,
+    state = manifest.state,
+    status = manifest.status,
+  }
+end
+
+function ExecBroker:_restoreManifest(snapshot, recoveryReason)
+  if type(snapshot) ~= "table" or type(snapshot.id or snapshot.jobId) ~= "string" then
+    return nil
+  end
+  local job = self._M.JobManifest.new(snapshot.id or snapshot.jobId, snapshot.inputs or {})
+  job.priority = snapshot.priority or 0
+  job.createdAt = snapshot.createdAt or os.time()
+  job.updatedAt = os.time()
+  job.metadata = snapshot.metadata or {}
+  job.faultReason = snapshot.faultReason
+  job.assignedMachine = nil
+  job.status = "PENDING"
+  job.state = "PENDING"
+  if recoveryReason then
+    job.metadata.persistenceRecovery = {
+      retryable = true,
+      reason = recoveryReason,
+      recoveredAt = os.time(),
+    }
+  end
+  return job
+end
+
+function ExecBroker:_persistencePayload()
+  local queued = {}
+  if type(self._queue.toPersistence) == "function" then
+    for _, job in ipairs(self._queue:toPersistence()) do
+      queued[#queued + 1] = persistedManifest(job)
+    end
+  end
+  local active = {}
+  for laneId, record in pairs(self._activeJobs) do
+    active[#active + 1] = {
+      laneId = laneId,
+      phase = record.phase,
+      manifest = persistedManifest(record.manifest),
+    }
+  end
+  local reports = {}
+  for laneId, report in pairs(self._reports) do
+    if type(report.toPersistence) == "function" then
+      reports[laneId] = report:toPersistence()
+    end
+  end
+  return { queuedJobs = queued, activeJobs = active, maintenanceReports = reports }
+end
+
+function ExecBroker:_savePersistence()
+  if not self._enablePersistence then return true end
+  local saved, err = self._persistence:save(self._persistenceKey, {
+    schemaVersion = PERSISTENCE_SCHEMA_VERSION,
+    writtenAt = os.time(),
+    payload = self:_persistencePayload(),
+  })
+  if saved then self._lastPersistence = now() end
+  if not saved and self._logger then
+    self._logger:warn("Persistence save failed: " .. tostring(err))
+  end
+  return saved, err
+end
+
+function ExecBroker:_restorePersistence()
+  local envelope, err = self._persistence:load(self._persistenceKey, function(candidate)
+    return candidate.schemaVersion == PERSISTENCE_SCHEMA_VERSION and
+      type(candidate.payload) == "table", "unsupported persistence schema"
+  end)
+  if not envelope then
+    if err ~= "not found" and self._logger then
+      self._logger:warn("Persistence restore skipped: " .. tostring(err))
+    end
+    return false, err
+  end
+
+  local payload = envelope.payload
+  for _, snapshot in ipairs(payload.queuedJobs or {}) do
+    local job = self:_restoreManifest(snapshot)
+    if not job or not self._queue:push(job) then
+      if self._logger then self._logger:warn("Discarded invalid persisted queued job") end
+    end
+  end
+  -- Active jobs are never restored into ALLOCATING, TRANSFERRING, PROCESSING,
+  -- or CLEANUP. A crash can leave the physical transfer incomplete, so retry
+  -- only through the normal queue path with an explicit recovery marker.
+  for _, record in ipairs(payload.activeJobs or {}) do
+    local job = self:_restoreManifest(record.manifest, "interrupted " .. tostring(record.phase) .. " transfer")
+    if not job or not self._queue:push(job) then
+      if self._logger then self._logger:warn("Discarded unrecoverable in-flight persisted job") end
+    end
+  end
+  for laneId, snapshot in pairs(payload.maintenanceReports or {}) do
+    local report = self._reports[laneId]
+    if report and type(report.restorePersistence) == "function" then
+      report:restorePersistence(snapshot)
+    end
+  end
+  self._lastPersistence = now()
+  return true
+end
+
 --- Execute one tick of the broker main loop.
 -- Advances the phase machine once. Call repeatedly from event loop.
 -- @return boolean  true if the broker is still running
@@ -1521,6 +1661,9 @@ function ExecBroker:tick()
   if self._lastHeartbeat == 0 or timeSinceHeartbeat >= self._heartbeatInterval then
     self:_transmitTelemetry()
   end
+  if self._enablePersistence and cur - self._lastPersistence >= self._persistenceInterval then
+    self:_savePersistence()
+  end
 
   return true
 end
@@ -1566,10 +1709,12 @@ function ExecBroker:run(maxTicks)
       os.execute("sleep " .. tostring(self._pollInterval))
     end
   end
+  self:_savePersistence()
 end
 
 --- Stop the broker main loop.
 function ExecBroker:stop()
+  self:_savePersistence()
   self._running = false
 end
 

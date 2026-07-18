@@ -147,6 +147,30 @@ end
 
 function MaintenanceReport:getLastReport() return self._lastReport end
 
+function MaintenanceReport:toPersistence()
+  return {
+    machineId = self.machineId,
+    faultCode = self.faultCode,
+    isRepairable = self.isRepairable,
+    history = self._history:toTable(),
+  }
+end
+
+function MaintenanceReport:restorePersistence(snapshot)
+  if type(snapshot) ~= "table" or type(snapshot.history) ~= "table" then
+    return false, "invalid maintenance history"
+  end
+  self.faultCode = type(snapshot.faultCode) == "number" and snapshot.faultCode or 0
+  self.isRepairable = snapshot.isRepairable == true
+  self._history:clear()
+  for _, entry in ipairs(snapshot.history) do
+    if type(entry) ~= "table" then return false, "invalid maintenance history entry" end
+    self._history:push(entry)
+  end
+  self._lastReport = self._history:size() > 0 and self._history:toTable()[self._history:size()] or nil
+  return true
+end
+
 function MaintenanceReport:toTelemetry()
   return {
     machineId = self.machineId,
