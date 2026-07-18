@@ -24,6 +24,14 @@ Usage:
 local BrokerLogger = {}
 BrokerLogger.__index = BrokerLogger
 
+local EVENT_NAMES = {
+  DEBUG = "ae2es:log_info",
+  INFO = "ae2es:log_info",
+  WARN = "ae2es:log_warning",
+  ERROR = "ae2es:log_error",
+  CRITICAL = "ae2es:log_error",
+}
+
 -- Lazy-load logger modules (nil if unavailable)
 local LogEntry, LogRingBuffer
 local function _ensureModules()
@@ -35,6 +43,15 @@ local function _ensureModules()
     local ok, mod = pcall(require, "src.log_ring_buffer")
     if ok then LogRingBuffer = mod end
   end
+end
+
+local function publishLogEvent(severity, payload)
+  local eventApi = rawget(_G, "event")
+  local eventName = EVENT_NAMES[severity]
+  if not eventName or type(eventApi) ~= "table" or type(eventApi.push) ~= "function" then
+    return
+  end
+  pcall(eventApi.push, eventName, payload)
 end
 
 --- Create a new logger for a broker or component.
@@ -58,11 +75,14 @@ end
 -- @param severity  string  DEBUG/INFO/WARN/ERROR/CRITICAL
 -- @param message   string
 -- @param jobId     string|nil
-function BrokerLogger:_log(severity, message, jobId)
+-- @param skipPublish boolean|nil prevents listener feedback loops
+-- @param originId string|nil overrides the logger origin for received events
+function BrokerLogger:_log(severity, message, jobId, skipPublish, originId)
   _ensureModules()
+  local entryOriginId = originId or self._originId
   local entry
   if LogEntry then
-    local ok, result = pcall(LogEntry.new, LogEntry, self._originId, severity, message, jobId)
+    local ok, result = pcall(LogEntry.new, entryOriginId, severity, message, jobId)
     if ok then entry = result end
   end
   if self._buffer and entry then
@@ -70,7 +90,15 @@ function BrokerLogger:_log(severity, message, jobId)
   end
   -- Always print to terminal for immediate feedback
   local prefix = os.date and os.date("%H:%M:%S") or ""
-  print(string.format("[%s] [%s] [%s] %s", prefix, severity, self._originId, message))
+  print(string.format("[%s] [%s] [%s] %s", prefix, severity, entryOriginId, message))
+  if not skipPublish then
+    publishLogEvent(severity, {
+      originId = entryOriginId,
+      severity = severity,
+      message = message,
+      jobId = jobId,
+    })
+  end
 end
 
 function BrokerLogger:debug(msg, jobId) self:_log("DEBUG", msg, jobId) end
@@ -78,6 +106,48 @@ function BrokerLogger:info(msg, jobId)  self:_log("INFO", msg, jobId) end
 function BrokerLogger:warn(msg, jobId)  self:_log("WARN", msg, jobId); self._warnCount = (self._warnCount or 0) + 1 end
 function BrokerLogger:error(msg, jobId) self:_log("ERROR", msg, jobId); self._errorCount = (self._errorCount or 0) + 1; self._lastError = msg end
 function BrokerLogger:critical(msg, jobId) self:_log("CRITICAL", msg, jobId); self._errorCount = (self._errorCount or 0) + 1; self._lastError = msg end
+
+--- Attach listeners for AE2-ES namespaced log events.
+-- @param event table OpenComputers-compatible event API
+-- @return function cleanup callback that unregisters every listener
+function BrokerLogger:attachEventListeners(event)
+  if type(event) ~= "table" or type(event.listen) ~= "function" then
+    return function() end
+  end
+
+  local listeners = {}
+  local severityByEvent = {
+    ["ae2es:log_info"] = "INFO",
+    ["ae2es:log_warning"] = "WARN",
+    ["ae2es:log_error"] = "ERROR",
+  }
+
+  for eventName, severity in pairs(severityByEvent) do
+    local function listener(_, payload, jobId)
+      payload = type(payload) == "table" and payload or {
+        message = payload,
+        jobId = jobId,
+      }
+      local originId = payload.originId or "unknown"
+      if originId ~= self._originId then
+        self:_log(severity, tostring(payload.message or payload.report or ""), payload.jobId,
+          true, originId)
+      end
+    end
+
+    local ok = pcall(event.listen, eventName, listener)
+    if ok then
+      table.insert(listeners, { name = eventName, callback = listener })
+    end
+  end
+
+  return function()
+    if type(event.ignore) ~= "function" then return end
+    for _, listener in ipairs(listeners) do
+      pcall(event.ignore, listener.name, listener.callback)
+    end
+  end
+end
 
 --- Wrap a function call with error catching and logging.
 -- @param funcName  string  name of the function being wrapped

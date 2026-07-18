@@ -94,6 +94,7 @@ test_files = [
     "tests.test_state_machine",
     "tests.test_state_transitions",
     "tests.test_bounded_list",
+    "tests.test_pubsub_logging",
     "tests.test_profiler",
     "tests.unit.test_config_ui",
     "tests.unit.test_supervisor_config_ui",

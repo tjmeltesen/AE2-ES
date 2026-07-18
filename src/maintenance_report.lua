@@ -9,6 +9,11 @@ MaintenanceReport.SEVERITY = { INFO = "INFO", WARNING = "WARNING", CRITICAL = "C
 
 local S = MaintenanceReport.SEVERITY
 local DEFAULT_MAX_HISTORY = 100
+local EVENT_NAMES = {
+  [S.INFO] = "ae2es:log_info",
+  [S.WARNING] = "ae2es:log_warning",
+  [S.CRITICAL] = "ae2es:log_error",
+}
 local FAULT_REGISTRY = {
   [0] = { severity = S.INFO, message = "No Fault — machine operating normally",
     isRepairable = false, guidance = "No action needed" },
@@ -43,6 +48,22 @@ local function registryEntry(code)
     isRepairable = false,
     guidance = "Manual inspection required — fault code not in registry",
   }
+end
+
+local function publishLogEvent(entry, machineId)
+  local eventApi = rawget(_G, "event")
+  local eventName = EVENT_NAMES[entry.severity]
+  if not eventName or type(eventApi) ~= "table" or type(eventApi.push) ~= "function" then
+    return
+  end
+
+  pcall(eventApi.push, eventName, {
+    originId = machineId,
+    severity = entry.severity,
+    message = entry.description ~= "" and entry.description or entry.report,
+    report = entry.report,
+    timestamp = entry.timestamp,
+  })
 end
 
 function MaintenanceReport.new(machineId)
@@ -81,6 +102,7 @@ function MaintenanceReport:logToHistory(event)
   self._history._trimTarget = self._maxHistory
   self._history:push(entry)
   self._lastReport = entry
+  publishLogEvent(entry, self.machineId)
   return self._history:size()
 end
 
