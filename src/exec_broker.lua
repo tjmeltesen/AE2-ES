@@ -61,6 +61,11 @@ local function now()
   return os.time() + (os.clock() % 1)
 end
 
+local function stableMachineName(entry)
+  return entry.machineName or entry.name or entry.laneId or
+    entry.machineAddr or entry.address
+end
+
 -- ===========================================================================
 -- Module registry
 -- ===========================================================================
@@ -103,6 +108,9 @@ ExecBroker.DEFAULT_MODULES = {
 --   threadRegistry   — framework object exposing registerThread(callback)
 --   enableAutoCrafting — boolean, opt into whitelisted ME auto-crafting
 --   autoCraftInputs  — array of {name, amount, damage?, nbt?} desired buffer minimums
+--   enableDiscovery  — boolean, opt into runtime GT machine discovery
+--   minMachines      — number, minimum machines required when discovery starts
+--   componentApi     — injectable OpenComputers component API for discovery
 -- @return ExecBroker instance
 function ExecBroker.new(config)
   assert(config ~= nil, "ExecBroker requires a config table")
@@ -188,6 +196,15 @@ function ExecBroker.new(config)
   -- Sort for deterministic iteration
   table.sort(machineList, function(a, b) return a.laneId < b.laneId end)
 
+  local staticMachineNames = {}
+  local configuredMachines = config.staticMachines or machineEntries
+  for _, lane in ipairs(configuredMachines) do
+    local name = stableMachineName(lane)
+    if type(name) == "string" and name ~= "" then
+      staticMachineNames[name] = true
+    end
+  end
+
   -- Logger for diagnostics and error tracking
   local BrokerLogger = config.logger or safeRequire("src.broker_logger")
   local logger = nil
@@ -226,6 +243,11 @@ function ExecBroker.new(config)
     _machines        = machinesByLane,
     _machineList     = machineList,
     _machineTransposers = config.machineTransposers or {},
+    _staticMachineNames = staticMachineNames,
+    _discoveredMachines = {},
+    _componentApi       = config.componentApi,
+    _enableDiscovery    = config.enableDiscovery == true,
+    _minMachines        = config.minMachines,
     _meControllerAddr = config.meControllerAddr or "",
     _databaseAddr    = config.databaseAddr or "",
         _redstoneLockAddr = config.redstoneAddress or "",
@@ -328,7 +350,121 @@ function ExecBroker.new(config)
     self._logger:warn("BUFFERING: no feeder and no ME Controller address configured")
   end
 
+  if self._enableDiscovery then
+    local refreshed, err = self:refreshMachines()
+    assert(refreshed, "ExecBroker: initial machine discovery failed: " .. tostring(err))
+  end
+  if self._minMachines ~= nil then
+    assert(type(self._minMachines) == "number" and self._minMachines >= 0,
+      "ExecBroker: minMachines must be a non-negative number")
+    assert(#self._machineList >= self._minMachines,
+      string.format("ExecBroker: requires minMachines=%d, found %d",
+        self._minMachines, #self._machineList))
+  end
+
   return self
+end
+
+--- Add a discovered machine without altering explicitly configured lanes.
+-- @param entry table component discovery entry
+-- @param machineName string stable machine identity
+-- @return string lane ID
+function ExecBroker:_registerDiscoveredMachine(entry, machineName)
+  local laneId = machineName
+  if self._machines[laneId] then
+    laneId = "discovered:" .. machineName
+  end
+
+  local node = self._M.MachineNode.new(entry.address, {
+    machineType = entry.type or "gt_machine",
+    hardwareAddress = entry.address,
+    laneId = laneId,
+    useStateMachine = self._useStateMachine,
+  })
+  self._machines[laneId] = node
+  self._reports[laneId] = self._M.MaintenanceReport.new(laneId)
+  table.insert(self._machineList, { laneId = laneId, address = entry.address, node = node })
+  table.sort(self._machineList, function(a, b) return a.laneId < b.laneId end)
+  self._discoveredMachines[machineName] = { laneId = laneId, address = entry.address }
+  if type(self._hal.invalidateCache) == "function" then
+    self._hal:invalidateCache(entry.address)
+  end
+  return laneId
+end
+
+local function discoveredName(componentApi, entry)
+  if type(entry.machineName) == "string" and entry.machineName ~= "" then
+    return entry.machineName
+  end
+  if type(componentApi) == "table" and type(componentApi.proxy) == "function" then
+    local ok, proxy = pcall(componentApi.proxy, entry.address)
+    if ok and type(proxy) == "table" then
+      for _, methodName in ipairs({ "getMachineName", "getName" }) do
+        local method = proxy[methodName]
+        if type(method) == "function" then
+          local named, name = pcall(method)
+          if named and type(name) == "string" and name ~= "" then return name end
+        end
+      end
+    end
+  end
+  return entry.address
+end
+
+--- Rescan GT machine components and merge them with static configuration.
+-- Static entries are keyed by configured stable machine name and always win.
+-- Missing dynamic machines are removed only when they have no active job.
+-- @return boolean, number|string success plus current machine count or error
+function ExecBroker:refreshMachines()
+  if not self._enableDiscovery then return true, #self._machineList end
+
+  local componentApi = self._componentApi or safeRequire("component")
+  local ComponentDiscover = safeRequire("lib.component_discover")
+  if not ComponentDiscover or not componentApi then
+    return false, "component discovery is unavailable"
+  end
+
+  -- A refresh establishes a new component view. Drop cached handles first so
+  -- newly registered and retained machines cannot keep a disconnected proxy.
+  if type(self._hal.invalidateCache) == "function" then
+    for _, machine in ipairs(self._machineList) do
+      self._hal:invalidateCache(machine.address)
+    end
+  end
+
+  local discovered = ComponentDiscover.discoverGtMachines(componentApi)
+  local byName = {}
+  for _, entry in ipairs(discovered) do
+    local name = discoveredName(componentApi, entry)
+    if not byName[name] then byName[name] = entry end
+  end
+
+  for name, record in pairs(self._discoveredMachines) do
+    local latest = byName[name]
+    if not latest or latest.address ~= record.address then
+      if not self._activeJobs[record.laneId] then
+        self._machines[record.laneId] = nil
+        self._reports[record.laneId] = nil
+        self._discoveredMachines[name] = nil
+        for index = #self._machineList, 1, -1 do
+          if self._machineList[index].laneId == record.laneId then
+            table.remove(self._machineList, index)
+          end
+        end
+        if type(self._hal.invalidateCache) == "function" then
+          self._hal:invalidateCache(record.address)
+        end
+      end
+    end
+  end
+
+  for name, entry in pairs(byName) do
+    if not self._staticMachineNames[name] and not self._discoveredMachines[name] then
+      self:_registerDiscoveredMachine(entry, name)
+    end
+  end
+
+  return true, #self._machineList
 end
 
 -- ===========================================================================

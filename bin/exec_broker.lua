@@ -33,6 +33,14 @@ else
   if config.useCoroutineTransfer == true then
     broker:setThreadRegistry(framework)
   end
+  if config.enableDiscovery == true then
+    framework:registerTimer(30, function()
+      local refreshed, err = broker:refreshMachines()
+      if not refreshed and broker._logger then
+        broker._logger:warn("Machine discovery refresh failed: " .. tostring(err))
+      end
+    end)
+  end
   framework:registerInit(function()
     local event = require("event")
     local logger = BrokerLogger.new(tostring(config.brokerId) .. ":events")

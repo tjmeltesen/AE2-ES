@@ -99,6 +99,7 @@ test_files = [
     "tests.test_pubsub_logging",
     "tests.test_transfer_clear_and_fluids",
     "tests.test_coroutine_transfer",
+    "tests.test_machine_discovery",
     "tests.test_hal_sensor_parser",
     "tests.test_auto_crafting",
     "tests.test_profiler",

@@ -51,6 +51,7 @@ local DEFAULT_CONFIG = {
   enableAutoCrafting    = false,
   autoCraftInputs       = {},
   enableDiscovery       = false,
+  minMachines           = 1,
   enablePersistence     = false,
   enableRemoteControl   = false,
   machines          = {},
@@ -888,6 +889,25 @@ function ConfigUI:buildExecConfig()
   -- Build HAL config
   local halConfig = { capabilityMap = capabilityMap }
 
+  -- Preserve a stable machine name for discovery conflict resolution.  An
+  -- address is a fallback only when the adapter does not expose a name.
+  local staticMachines = {}
+  for _, lane in ipairs(cfg.machines or {}) do
+    local staticLane = {}
+    for key, value in pairs(lane) do staticLane[key] = value end
+    if not staticLane.machineName and component then
+      local address = staticLane.machineAddr or staticLane.address
+      local ok, proxy = pcall(component.proxy, address)
+      if ok and proxy and type(proxy.getMachineName) == "function" then
+        local named, machineName = pcall(proxy.getMachineName)
+        if named and type(machineName) == "string" and machineName ~= "" then
+          staticLane.machineName = machineName
+        end
+      end
+    end
+    table.insert(staticMachines, staticLane)
+  end
+
   local execConfig = {
     brokerId          = cfg.brokerId or "broker-1",
     machines          = machines,
@@ -903,6 +923,9 @@ function ConfigUI:buildExecConfig()
     enableAutoCrafting    = cfg.enableAutoCrafting == true,
     autoCraftInputs       = cfg.autoCraftInputs or {},
     enableDiscovery       = cfg.enableDiscovery == true,
+    minMachines           = cfg.minMachines or 1,
+    staticMachines        = staticMachines,
+    componentApi          = component,
     enablePersistence     = cfg.enablePersistence == true,
     enableRemoteControl   = cfg.enableRemoteControl == true,
     pollInterval      = cfg.pollInterval or 0.5,

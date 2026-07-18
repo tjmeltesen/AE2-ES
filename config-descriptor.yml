@@ -37,6 +37,9 @@ fields:
   enableDiscovery:
     type: boolean
     default: false
+  minMachines:
+    type: integer
+    default: 1
   enablePersistence:
     type: boolean
     default: false
