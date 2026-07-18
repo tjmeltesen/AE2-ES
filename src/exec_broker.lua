@@ -97,6 +97,8 @@ ExecBroker.DEFAULT_MODULES = {
 --   heartbeatInterval— number, seconds between telemetry broadcasts (default 2.0)
 --   debounceWindow   — number, BufferSnapshot stability window (default 1.5)
 --   useStateMachine  — boolean, opt into shared state-machine dispatch (default false)
+--   useTimeSliceScheduler — boolean, budget active jobs and telemetry (default false)
+--   timeSliceBudget  — number, seconds available to broker work per tick
 -- @return ExecBroker instance
 function ExecBroker.new(config)
   assert(config ~= nil, "ExecBroker requires a config table")
@@ -189,6 +191,20 @@ function ExecBroker.new(config)
     logger = BrokerLogger.new(config.brokerId)
   end
 
+  local timeSliceScheduler = nil
+  if config.useTimeSliceScheduler == true then
+    timeSliceScheduler = config.timeSliceScheduler
+    if timeSliceScheduler == nil then
+      local TimeSliceScheduler = safeRequire("src.timeslicescheduler")
+      assert(TimeSliceScheduler ~= nil,
+        "ExecBroker: time-slice scheduler could not be loaded")
+      timeSliceScheduler = TimeSliceScheduler.new(config.timeSliceBudget)
+    end
+    assert(type(timeSliceScheduler.reset) == "function" and
+      type(timeSliceScheduler.remaining) == "function",
+      "ExecBroker: time-slice scheduler requires reset() and remaining()")
+  end
+
   local self = setmetatable({
     -- Identity
     _brokerId        = config.brokerId,
@@ -225,9 +241,13 @@ function ExecBroker.new(config)
     _tickCount        = 0,
     _running          = true,
     _useStateMachine  = config.useStateMachine == true,
+    _useTimeSliceScheduler = config.useTimeSliceScheduler == true,
+    _timeSliceScheduler = timeSliceScheduler,
 
     -- Active jobs: { [laneId] = { manifest, phase, assignedAt } }
     _activeJobs       = {},
+    _telemetryMatrix  = {},
+    _telemetryCursor  = 1,
 
     -- Statistics
     _stats            = {
@@ -874,6 +894,9 @@ end
 -- @return string  next phase (CLEANUP, PROCESSING, or ALLOCATING)
 function ExecBroker:_phasePROCESSING()
   for laneId, active in pairs(self._activeJobs) do
+    if self._timeSliceScheduler and self._timeSliceScheduler:remaining() <= 0 then
+      break
+    end
     if active.phase == ExecBroker.PHASES.PROCESSING then
       self:_checkProcessingJob(laneId, active)
     end
@@ -1116,8 +1139,15 @@ end
 -- Fire-and-forget: never waits for a response.
 -- Uses snapshot of current broker state.
 function ExecBroker:_transmitTelemetry()
-  local hwMatrix = {}
-  for _, entry in ipairs(self._machineList) do
+  local scheduler = self._timeSliceScheduler
+  local hwMatrix = scheduler and self._telemetryMatrix or {}
+  local cursor = scheduler and self._telemetryCursor or 1
+
+  while cursor <= #self._machineList do
+    if scheduler and scheduler:remaining() <= 0 then
+      break
+    end
+    local entry = self._machineList[cursor]
     if entry.node and type(entry.node.toTelemetry) == "function" then
       hwMatrix[entry.laneId] = entry.node:toTelemetry()
     else
@@ -1128,6 +1158,11 @@ function ExecBroker:_transmitTelemetry()
         status  = "unknown",
       }
     end
+    cursor = cursor + 1
+  end
+
+  if scheduler then
+    self._telemetryCursor = cursor > #self._machineList and 1 or cursor
   end
 
   -- Collect alerts from all maintenance reports
@@ -1175,6 +1210,13 @@ function ExecBroker:tick()
   end
 
   self._tickCount = self._tickCount + 1
+
+  -- The broker never asks the scheduler to sleep: when the framework is
+  -- enabled it remains the only event.pull owner.  The scheduler is used only
+  -- as a per-tick budget for real hot loops below.
+  if self._timeSliceScheduler then
+    self._timeSliceScheduler:reset()
+  end
 
   -- Throttled buffer poll (not every tick — respects pollInterval)
   local cur = now()
