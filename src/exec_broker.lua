@@ -99,6 +99,8 @@ ExecBroker.DEFAULT_MODULES = {
 --   useStateMachine  — boolean, opt into shared state-machine dispatch (default false)
 --   useTimeSliceScheduler — boolean, budget active jobs and telemetry (default false)
 --   timeSliceBudget  — number, seconds available to broker work per tick
+--   useCoroutineTransfer — boolean, opt into framework-tracked lane transfers
+--   threadRegistry   — framework object exposing registerThread(callback)
 -- @return ExecBroker instance
 function ExecBroker.new(config)
   assert(config ~= nil, "ExecBroker requires a config table")
@@ -243,6 +245,9 @@ function ExecBroker.new(config)
     _useStateMachine  = config.useStateMachine == true,
     _useTimeSliceScheduler = config.useTimeSliceScheduler == true,
     _timeSliceScheduler = timeSliceScheduler,
+    _useCoroutineTransfer = config.useCoroutineTransfer == true,
+    _threadRegistry    = config.threadRegistry,
+    _transferTimeout   = config.transferTimeout or 30,
 
     -- Active jobs: { [laneId] = { manifest, phase, assignedAt } }
     _activeJobs       = {},
@@ -521,35 +526,26 @@ end
 -- machine's ME interface. Transitions to PROCESSING once all transfers complete.
 -- @return string  next phase (PROCESSING or TRANSFERRING)
 function ExecBroker:_phaseTRANSFERRING()
-  --self._logger:info(string.format("TRANSFERRING PHASE"))
-  -- Phase 1: Process jobs already in TRANSFERRING
-  for laneId, active in pairs(self._activeJobs) do
-    if active.phase == ExecBroker.PHASES.TRANSFERRING then
-      self:_transferForJob(laneId, active)
-    end
-  end
-
-  -- Phase 2: Promote ALLOCATING jobs and transfer
+  -- Promote ALLOCATING jobs before scheduling their lanes.
   for laneId, active in pairs(self._activeJobs) do
     if active.phase == ExecBroker.PHASES.ALLOCATING then
       active.phase = ExecBroker.PHASES.TRANSFERRING
-      --self._logger:info(string.format("TRANSFERRING PHASE: ALLOCATING JOB TO TRANSFERRING"))
-      self:_transferForJob(laneId, active)
     end
   end
 
-  -- After all transfers, check if any jobs are still in TRANSFERRING or ALLOCATING
-  --[[for _, active in pairs(self._activeJobs) do
-    if active.phase == ExecBroker.PHASES.TRANSFERRING or
-       active.phase == ExecBroker.PHASES.ALLOCATING then
-      return ExecBroker.PHASES.TRANSFERRING
+  -- Each lane is either serviced once cooperatively or by its one tracked
+  -- framework coroutine.  A missing registry deliberately retains legacy,
+  -- tick-driven behavior.
+  for laneId, active in pairs(self._activeJobs) do
+    if active.phase == ExecBroker.PHASES.TRANSFERRING then
+      if self:_transferTimedOut(laneId, active) then
+        -- The timeout handler faults and advances the lane to CLEANUP.
+      elseif not self:_scheduleTransferLane(laneId, active) then
+        self:_transferForJob(laneId, active)
+      end
     end
   end
 
-  -- All jobs advanced to PROCESSING (or CLEANUP on error)
-  return ExecBroker.PHASES.PROCESSING]]--
-  -- Still transferring? Stay in this phase. All done? Free the pipeline
-  -- for the next job. (CLEANUP jobs are handled by the async back-end.)
   for _, active in pairs(self._activeJobs) do
     if active.phase == ExecBroker.PHASES.TRANSFERRING or
        active.phase == ExecBroker.PHASES.ALLOCATING then
@@ -557,6 +553,76 @@ function ExecBroker:_phaseTRANSFERRING()
     end
   end
   return ExecBroker.PHASES.ALLOCATING
+end
+
+--- Attach a framework thread registry after construction.
+-- The launcher calls this before framework:start(); tests and embedders may
+-- inject the registry directly through ExecBroker.new instead.
+function ExecBroker:setThreadRegistry(threadRegistry)
+  self._threadRegistry = threadRegistry
+end
+
+--- Fault a transfer while retaining the lane lock until normal cleanup.
+function ExecBroker:_faultTransfer(laneId, active, message)
+  if active.phase ~= ExecBroker.PHASES.TRANSFERRING then return end
+  active.manifest:fault(message)
+  active.phase = ExecBroker.PHASES.CLEANUP
+  active._transferThread = nil
+  if self._logger then self._logger:warn(message) end
+end
+
+--- Guard every TRANSFERRING lane against a stuck coroutine or stalled registry.
+function ExecBroker:_transferTimedOut(laneId, active)
+  local startedAt = active._transferStartedAt
+  if not startedAt then
+    active._transferStartedAt = now()
+    return false
+  end
+  if now() - startedAt <= self._transferTimeout then return false end
+
+  self:_faultTransfer(laneId, active,
+    string.format("Transfer timed out after %ds for lane %s", self._transferTimeout, laneId))
+  return true
+end
+
+--- Register exactly one coroutine per transferring lane.
+-- Returns true only when framework scheduling owns this tick.  Registration
+-- failures intentionally fall back to _transferForJob on the caller's tick.
+function ExecBroker:_scheduleTransferLane(laneId, active)
+  local registry = self._threadRegistry
+  if not self._useCoroutineTransfer or
+     type(registry) ~= "table" or
+     type(registry.registerThread) ~= "function" then
+    return false
+  end
+  if active._transferThread then return true end
+
+  local function runLane()
+    while self._activeJobs[laneId] == active and
+          active.phase == ExecBroker.PHASES.TRANSFERRING do
+      local ok, err = xpcall(function()
+        self:_transferForJob(laneId, active)
+      end, function(reason) return tostring(reason) end)
+      if not ok then
+        self:_faultTransfer(laneId, active,
+          "Transfer coroutine crashed for lane " .. laneId .. ": " .. tostring(err))
+        break
+      end
+      coroutine.yield()
+    end
+    active._transferThread = nil
+  end
+
+  local ok, threadOrErr = pcall(registry.registerThread, registry, runLane)
+  if not ok then
+    if self._logger then
+      self._logger:warn("Transfer thread registration failed for lane " .. laneId ..
+        "; using cooperative fallback: " .. tostring(threadOrErr))
+    end
+    return false
+  end
+  active._transferThread = threadOrErr or true
+  return true
 end
 
 --- Transfer items for a specific job using Database + Dual Interface model.
@@ -586,6 +652,7 @@ function ExecBroker:_transferForJob(addr, active)
     active._transferTick = 0
     active._transferDbSlots = { items = {}, fluids = {} }
   end
+  active._transferStartedAt = active._transferStartedAt or now()
 
   -- addr is the machine hardware address; resolve to laneId for config lookup
   local laneId = addr

@@ -83,3 +83,20 @@ do
   Assert.equal(2, steps)
 end
 Assert.endTest()
+
+Assert.startTest("ProgramFramework starts threads registered by a running loop")
+do
+  local event = newEvent()
+  local framework = ProgramFramework.new({ event = event })
+  local steps = 0
+  framework:registerLoop(function()
+    if steps == 0 then
+      framework:registerThread(function() steps = steps + 1 end)
+      return true
+    end
+    return false
+  end)
+  Assert.isTrue(framework:start())
+  Assert.equal(1, steps, "dynamically registered thread should run next cycle")
+end
+Assert.endTest()

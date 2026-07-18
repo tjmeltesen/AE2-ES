@@ -53,6 +53,11 @@ end
 function ProgramFramework:registerThread(callback)
   assert(type(callback) == "function", "registerThread requires a function")
   local thread = { callback = callback }
+  -- Threads registered by a running loop must be ready for the very next
+  -- scheduling pass; otherwise dynamically added work is resumed as nil.
+  if self._running then
+    thread.coroutine = coroutine.create(callback)
+  end
   table.insert(self._threads, thread)
   return thread
 end

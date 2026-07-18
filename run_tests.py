@@ -98,6 +98,7 @@ test_files = [
     "tests.test_bounded_list",
     "tests.test_pubsub_logging",
     "tests.test_transfer_clear_and_fluids",
+    "tests.test_coroutine_transfer",
     "tests.test_hal_sensor_parser",
     "tests.test_profiler",
     "tests.unit.test_config_ui",

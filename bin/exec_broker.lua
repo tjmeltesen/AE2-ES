@@ -30,6 +30,9 @@ else
   if not broker then error("Could not construct Exec Broker: " .. tostring(err)) end
 
   local framework = ProgramFramework.new({ pollInterval = config.pollInterval })
+  if config.useCoroutineTransfer == true then
+    broker:setThreadRegistry(framework)
+  end
   framework:registerInit(function()
     local event = require("event")
     local logger = BrokerLogger.new(tostring(config.brokerId) .. ":events")
