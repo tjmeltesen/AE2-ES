@@ -288,6 +288,7 @@ do
     assert_equal(config.redstoneAddress, "", "2.1: redstoneAddress empty")
     assert_equal(config.redstoneSide, 5, "2.1: redstoneSide defaults to 5")
     assert_equal(config.meControllerAddr, "", "2.1: meControllerAddr empty")
+    assert_false(config.enableDiscovery, "2.1: discovery remains opt-in")
 
     -- Test 2.2: redstoneSide has a default
     assert_equal(config.redstoneSide, 5, "2.2: redstoneSide defaults to 5")
@@ -612,7 +613,8 @@ do
 
     -- Test 7.2: HAL config is passed through
     assert_not_nil(execCfg.halConfig, "7.2: halConfig exists")
-    assert_not_nil(execCfg.halConfig, "7.2: halConfig exists")
+    assert_equal(execCfg.halConfig.capabilityMap["abcd-7890-gtmach"], 128,
+        "7.2: machine capability profile is registered with HAL")
 
     -- Test 7.3: Modem is resolved to proxy
     assert_not_nil(execCfg.modem, "7.3: Modem resolved to proxy")
@@ -632,10 +634,34 @@ do
     -- Test 7.5: Machines are included
     assert_not_nil(execCfg.machines, "7.5: Machines table present")
     assert_not_nil(execCfg.machines["abcd-7890-gtmach"], "7.5: Machine entry exists")
+    assert_equal(execCfg.machines["abcd-7890-gtmach"].machineType, "abcd-7890-gtmach",
+        "7.5: machine uses its registered HAL capability key")
 end
 
 --===========================================================================
--- Group 8: Config set/get
+-- Group 8: Component discovery helpers
+--===========================================================================
+do
+    reportGroup("Group 8: Component discovery helpers")
+
+    local Discover = require("lib.component_discover")
+    local comp = makeComponents()
+
+    local modems = Discover.discoverByType(comp, "modem")
+    assert_equal(#modems, 1, "8.1: discoverByType finds modem")
+    assert_equal(modems[1].address, "abcd-1234-modem", "8.1: discovered address")
+
+    local machines = Discover.discoverGtMachines(comp)
+    assert_equal(#machines, 2, "8.2: discoverGtMachines finds GT machines")
+    assert_equal(machines[1].address, "abcd-1111-gtmach", "8.2: machines sorted by address")
+
+    local transposers = Discover.discoverTransposerStorage(comp)
+    assert_equal(#transposers, 1, "8.3: discoverTransposerStorage finds transposer")
+    assert_equal(transposers[1].address, "abcd-1234-transposer", "8.3: transposer address")
+end
+
+--===========================================================================
+-- Group 9: Config set/get
 --===========================================================================
 do
     reportGroup("Group 9: Config set/get")

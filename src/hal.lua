@@ -76,7 +76,8 @@ local CAPABILITY_REGISTRY = {
 --- Create a new HardwareAbstractionLayer instance.
 -- @param overrides  optional table with keys:
 --   cacheTTL      — number, seconds before auto-refreshing a cached proxy (default 300)
---   capabilityMap — table mapping machineType string to capability flags
+--   capabilityMap — table mapping machine capability keys to flags. ConfigUI
+--                    uses the manually configured machine address as the key.
 -- @return HAL instance
 function HAL:new(overrides)
   overrides = overrides or {}
@@ -85,20 +86,20 @@ function HAL:new(overrides)
   -- Component proxy cache: address -> { proxy, timestamp }
   self._proxyCache   = {}
   self._cacheTTL     = overrides.cacheTTL or 300
+  self._lastError    = nil
 
-  -- Capability registry (merge defaults with overrides)
+  -- Capability registry (merge defaults with setup-time registrations).
+  -- ConfigUI supplies its persisted machineTypes map here; no discovery or
+  -- component probe is performed while constructing HAL or during broker ticks.
   self._capMap = {}
   for mtype, flags in pairs(CAPABILITY_REGISTRY) do
-    self._capMap[mtype] = flags
+    self:registerCapabilities(mtype, flags)
   end
   if overrides.capabilityMap then
     for mtype, flags in pairs(overrides.capabilityMap) do
-      self._capMap[mtype] = flags
+      self:registerCapabilities(mtype, flags)
     end
   end
-
-  -- Last error message (cleared on each operation)
-  self._lastError = nil
 
   return self
 end
@@ -181,9 +182,10 @@ function HAL:getCapabilities(machineType)
   return self._capMap[machineType] or HAL.CAP_PROFILE_BASIC
 end
 
---- Register a machine type's capability flags at runtime.
--- This allows the broker to register discovered machine types on the fly.
--- @param machineType  string
+--- Register a machine capability key's flags during setup.
+-- Runtime callers may use this for an explicit discovery refresh; broker ticks
+-- must only query the already-registered map.
+-- @param machineType  string (machine type or configured machine address)
 -- @param flags        number (bitmask of CAP_* constants)
 function HAL:registerCapabilities(machineType, flags)
   if type(machineType) ~= "string" then

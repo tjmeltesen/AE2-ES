@@ -827,12 +827,21 @@ function ConfigUI:buildExecConfig()
 
   -- Build machines table
   local machines = {}
+  local capabilityMap = {}
   if cfg.machines then
     for _, lane in ipairs(cfg.machines) do
       local addr = lane.machineAddr or lane.address
       local laneId = lane.laneId or addr
       if addr and addr ~= "" then
-        local machineType = (cfg.machineTypes and cfg.machineTypes[laneId]) or "gt_machine"
+        -- machineTypes is persisted as address -> capability mask. Keep the
+        -- address as MachineNode's lookup key so HAL can resolve the profile.
+        -- The manually configured address remains authoritative even when
+        -- discovery is enabled elsewhere.
+        local machineType = addr
+        local flags = cfg.machineTypes and (cfg.machineTypes[addr] or cfg.machineTypes[laneId])
+        if type(flags) == "number" then
+          capabilityMap[addr] = flags
+        end
         local proxy = nil
         if component then
           local ok, p = pcall(component.proxy, addr)
@@ -876,7 +885,7 @@ function ConfigUI:buildExecConfig()
   end
 
   -- Build HAL config
-  local halConfig = {}
+  local halConfig = { capabilityMap = capabilityMap }
 
   local execConfig = {
     brokerId          = cfg.brokerId or "broker-1",
