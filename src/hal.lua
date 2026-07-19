@@ -17,7 +17,11 @@ Dependencies: OC component, sides, transposer libraries
 Used by:      Exec Broker main loop (A8), MachineNode (A2), MaintenanceReport (A6)
 ]]--
 
-local component = require("component")
+local function safeRequire(name)
+  local ok, module = pcall(require, name)
+  if ok then return module end
+  return nil
+end
 
 local HAL = {}
 HAL.__index = HAL
@@ -130,6 +134,11 @@ function HAL:getProxy(address)
   end
 
   -- Create new proxy
+  local component = safeRequire("component")
+  if not component or type(component.proxy) ~= "function" then
+    self._lastError = "HAL:getProxy() — component API unavailable"
+    return nil, self._lastError
+  end
   local ok, proxy = pcall(component.proxy, address)
   if not ok or not proxy then
     self._proxyCache[address] = nil  -- clear stale entry
@@ -334,6 +343,11 @@ end
 -- @return boolean, or nil + error
 function HAL:isSlotEmpty(side, slot)
   self:clearError()
+  local component = safeRequire("component")
+  if not component then
+    self._lastError = "HAL:isSlotEmpty() — component API unavailable"
+    return nil, self._lastError
+  end
   if not component.isAvailable("transposer") then
     self._lastError = "HAL:isSlotEmpty() — transposer not available"
     return nil, self._lastError
@@ -362,7 +376,6 @@ function HAL:getTankContents(transposerAddress, side)
     return nil, self._lastError
   end
 
-  local transposer = component.transposer
   local tankCountOk, tankCount = pcall(transposer.getTankCount, transposer, side)
   if not tankCountOk or not tankCount then
     self._lastError = "HAL:getTankContents() — cannot get tank count"
@@ -921,6 +934,11 @@ end
 function HAL:storeItemRef(side, slot, dbAddress, dbSlot)
   self:clearError()
 
+  local component = safeRequire("component")
+  if not component then
+    self._lastError = "HAL:storeItemRef() — component API unavailable"
+    return false
+  end
   if not component.isAvailable("transposer") then
     self._lastError = "HAL:storeItemRef() — transposer not available"
     return false
@@ -949,6 +967,11 @@ end
 function HAL:snapshotInventoryToDB(side, dbAddress, dbStart)
   self:clearError()
 
+  local component = safeRequire("component")
+  if not component then
+    self._lastError = "HAL:snapshotInventoryToDB() — component API unavailable"
+    return nil, self._lastError
+  end
   if not component.isAvailable("transposer") then
     self._lastError = "HAL:snapshotInventoryToDB() — transposer not available"
     return nil, self._lastError
@@ -1217,6 +1240,11 @@ end
 -- @return number  stack size (0 if empty), or nil + error
 function HAL:checkSlotCount(side, slot)
   self:clearError()
+  local component = safeRequire("component")
+  if not component then
+    self._lastError = "HAL:checkSlotCount() — component API unavailable"
+    return nil, self._lastError
+  end
   if not component.isAvailable("transposer") then
     self._lastError = "HAL:checkSlotCount() — transposer not available"
     return nil, self._lastError
@@ -1272,7 +1300,11 @@ function HAL:mapSides(transposerAddress)
     return {}
   end
 
-  local sides = require("sides")
+  local sides = safeRequire("sides")
+  if not sides then
+    self._lastError = "HAL:mapSides() — sides API unavailable"
+    return {}
+  end
   local result = {}
 
   local validSides = {sides.north, sides.south, sides.east, sides.west, sides.up, sides.down}

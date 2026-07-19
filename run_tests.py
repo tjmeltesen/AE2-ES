@@ -82,6 +82,7 @@ except Exception as e:
 
 # Define test files
 test_files = [
+    "tests.test_import_safety",
     "tests.test_runtime_graph",
     "tests.test_jit_db_cleanup",
     "tests.test_telemetry_serialization",

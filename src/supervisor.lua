@@ -10,11 +10,22 @@
 --   Exec Brokers broadcast serialized TelemetryPayload on port SUPERVISOR_PORT
 --   Supervisor never acknowledges (fire-and-forget per architectural constraint)
 
-local component = require("component")
-local event = require("event")
-local computer = require("computer")
 local TelemetryPayload = require("src.telemetrypayload")
 local BoundedList = require("lib.bounded_list")
+
+local function safeRequire(name)
+  local ok, module = pcall(require, name)
+  if ok then return module end
+  return nil
+end
+
+local function uptime()
+  local computer = safeRequire("computer")
+  if computer and type(computer.uptime) == "function" then
+    return computer.uptime()
+  end
+  return os.clock()
+end
 
 --- ============================================================
 --- Configuration
@@ -194,7 +205,7 @@ function Supervisor:initialize()
 
   self._running = true
   self._stopped = false
-  self._stats.startTime = computer.uptime()
+  self._stats.startTime = uptime()
   self:_logMessage("INFO", "Supervisor event loop started")
   return true, nil
 end
@@ -249,7 +260,7 @@ function Supervisor:_logMessage(level, message)
   self._logIndex = self._logIndex + 1
   local entry = {
     id = self._logIndex,
-    timestamp = computer.uptime(),
+    timestamp = uptime(),
     level = level,
     message = message,
   }
@@ -286,6 +297,10 @@ end
 --- Initialize modem component and open listening port.
 --- @return boolean success, string|nil error
 function Supervisor:_initModem()
+  local component = safeRequire("component")
+  if not component or type(component.isAvailable) ~= "function" then
+    return false, "component API unavailable"
+  end
   if not component.isAvailable("modem") then
     return false, "no modem component available"
   end
@@ -361,7 +376,7 @@ end
 --- @param payload string Raw serialized data
 function Supervisor:_processMessage(from, port, payload)
   self._stats.messagesReceived = self._stats.messagesReceived + 1
-  self._stats.lastMessageTime = computer.uptime()
+  self._stats.lastMessageTime = uptime()
 
   -- Step 1: Deserialize
   local telemetry, err = TelemetryPayload.deserialize(payload)
@@ -385,7 +400,7 @@ function Supervisor:_processMessage(from, port, payload)
 
   self._stats.messagesValid = self._stats.messagesValid + 1
   self._stats.lastBrokerId = telemetry.brokerId
-  self._activeBrokers[telemetry.brokerId] = computer.uptime()
+  self._activeBrokers[telemetry.brokerId] = uptime()
 
   -- Step 3: Enqueue into FIFO (for polling consumers like B5 Dashboard)
   self._queue:push(telemetry)
@@ -417,6 +432,11 @@ function Supervisor:start()
   local ok, err = self:initialize()
   if not ok then return false, err end
 
+  local event = safeRequire("event")
+  if not event then
+    self:shutdown()
+    return false, "event API unavailable"
+  end
   -- Periodic health check timer (fires every healthCheckInterval seconds)
   local healthTimer = event.timer(self._config.healthCheckInterval, function()
     self:_healthCheck()
@@ -439,7 +459,10 @@ end
 --- Signal the event loop to stop gracefully.
 function Supervisor:stop()
   self._running = false
-  pcall(computer.pushSignal, "ae2es_supervisor_stop")
+  local computer = safeRequire("computer")
+  if computer and type(computer.pushSignal) == "function" then
+    pcall(computer.pushSignal, "ae2es_supervisor_stop")
+  end
 end
 
 --- Check if the supervisor is currently running.
@@ -466,8 +489,8 @@ function Supervisor:_healthCheck()
   end
 
   -- Log if no messages received recently
-  local uptime = computer.uptime()
-  local idleTime = uptime - self._stats.lastMessageTime
+  local currentTime = uptime()
+  local idleTime = currentTime - self._stats.lastMessageTime
   if self._stats.lastMessageTime > 0 and idleTime > 60 then
     self:_logMessage("INFO", string.format(
       "No messages received for %.0f seconds", idleTime
@@ -477,7 +500,7 @@ end
 
 --- Print current status summary to stdout (for interactive terminals).
 function Supervisor:printStatus()
-  local uptime = computer.uptime() - self._stats.startTime
+  local elapsed = uptime() - self._stats.startTime
   local queueStats = self._queue:stats()
   local sinceLastMsg = 0
   if self._stats.lastMessageTime > 0 then
@@ -494,7 +517,7 @@ function Supervisor:printStatus()
   Consumers:       %d registered
 ════════════════════════════════
 ]],
-    uptime,
+    elapsed,
     self._stats.messagesReceived,
     self._stats.messagesValid,
     self._stats.messagesInvalid,
@@ -529,10 +552,10 @@ end
 function Supervisor:getStats()
   local sinceLastMsg = nil
   if self._stats.lastMessageTime > 0 then
-    sinceLastMsg = computer.uptime() - self._stats.lastMessageTime
+    sinceLastMsg = uptime() - self._stats.lastMessageTime
   end
   return {
-    uptime = computer.uptime() - self._stats.startTime,
+    uptime = uptime() - self._stats.startTime,
     messages = {
       received = self._stats.messagesReceived,
       valid = self._stats.messagesValid,
@@ -572,7 +595,7 @@ function Supervisor:getBrokerStatus(brokerId)
     return nil
   end
 
-  local elapsed = computer.uptime() - lastHeard
+  local elapsed = uptime() - lastHeard
   if elapsed > self._config.offlineThreshold then
     return "OFFLINE"
   elseif elapsed > self._config.staleThreshold then
