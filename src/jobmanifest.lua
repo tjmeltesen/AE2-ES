@@ -1,4 +1,11 @@
 -- Canonical JobManifest domain module. Safe to import outside OpenComputers.
+--
+-- Windows resolves ./src/JobManifest.lua to this file before the root
+-- compatibility shim. Return the canonical cached module for that spelling.
+local moduleName = ...
+if moduleName == "JobManifest" then
+  return require("src.jobmanifest")
+end
 
 local JobManifest = {}
 JobManifest.__index = JobManifest
@@ -90,6 +97,14 @@ end
 --- @param machineIndex number or string (address when single-arg)
 --- @param machineNode table MachineNode abstraction (optional)
 function JobManifest:bindHardware(machineIndex, machineNode)
+  -- The indexed form is an internal diagnostic binding and may retain
+  -- multiple machine nodes throughout the job lifecycle. The public
+  -- single-address form retains the production ALLOCATING/single-bind
+  -- contract below.
+  if machineNode ~= nil then
+    self._hardwareBinds[machineIndex] = machineNode
+    return true
+  end
   if self.status ~= STATE.ALLOCATING then return false end
   if self.assignedMachine ~= nil then return false end
   if machineNode == nil and type(machineIndex) == "string" then
@@ -132,10 +147,10 @@ end
 --- @return boolean
 function JobManifest:isStale(now)
   now = now or timestamp()
-  -- Legacy state-machine tests model COMPLETE as a cleanup sentinel. The
-  -- compatibility-facing COMPLETED status remains a terminal, non-stale job.
-  if self.state == STATE.COMPLETE and self.status ~= STATE.COMPLETED then return true end
-  if self:isTerminal() then return false end
+  -- COMPLETE is the JIT cleanup sentinel and is eligible for removal. The
+  -- production terminal states retain their records for diagnostics.
+  if self.state == STATE.COMPLETE then return true end
+  if self.status == STATE.COMPLETED or self.status == STATE.FAULTED then return false end
   local timeout = STATE_STALE_TIMEOUTS[self.status] or 300
   return now - (self.updatedAt or self.createdAt) > timeout
 end
@@ -239,9 +254,13 @@ function JobManifest:fault(reason)
   self.status = STATE.FAULTED
   self.faultReason = reason or "Unknown fault"
   self.updatedAt = timestamp()
-  self:logError({
-    code = "FAULT", message = self.faultReason, timestamp = self.updatedAt,
-  })
+  -- Preserve an already-recorded root cause, but ensure callers that only
+  -- fault the manifest still leave a diagnostic for maintenance reporting.
+  if #self._errorLog == 0 then
+    self:logError({
+      code = "FAULT", message = self.faultReason, timestamp = self.updatedAt,
+    })
+  end
   return true
 end
 

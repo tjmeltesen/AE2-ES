@@ -447,21 +447,25 @@ do
   -- Make buffer stable
   snap:update(bufferData)
 
-  -- Run several ticks to get into processing
+  -- Advance until a job is active, then inject mid-transfer/processing.
+  local phaseBefore, statsBefore
+  local faultInjected = false
   for _ = 1, 15 do
     broker:tick()
     mockUptime = mockUptime + 0.1
+    local stats = broker:getStats()
+    if not faultInjected and stats.activeJobs > 0 then
+      phaseBefore = broker:getPhase()
+      statsBefore = stats
+      faultMachine:injectFault(504, "Transfer error: item jam")
+      faultInjected = true
+    end
   end
 
-  local phaseBefore = broker:getPhase()
-  local statsBefore = broker:getStats()
-
-  -- Verify we reached PROCESSING phase
   Assert.notNil(phaseBefore, "broker has a phase")
-  Assert.greaterThan(0, statsBefore.activeJobs, "has active jobs (phase=" .. tostring(phaseBefore) .. ")")
-
-  -- Now inject a fault
-  faultMachine:injectFault(504, "Transfer error: item jam")
+  Assert.notNil(statsBefore, "captured stats while job was active")
+  Assert.greaterThan(0, statsBefore.activeJobs,
+    "has active jobs (phase=" .. tostring(phaseBefore) .. ")")
 
   -- Run more ticks for the fault to be detected
   for _ = 1, 10 do

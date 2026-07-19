@@ -293,8 +293,8 @@ do
 end
 Assert.endTest()
 
--- Test 4.6: isStale returns true after completion
-Assert.startTest("isStale returns true after COMPLETE or FAULTED")
+-- Test 4.6: cleanup sentinels are stale; production fault records are retained
+Assert.startTest("isStale returns true after COMPLETE and false after FAULTED")
 do
   local job = JobManifest.new("stale-test", {cobble = 64})
   Assert.isFalse(job:isStale(), "Active job should not be stale")
@@ -303,6 +303,6 @@ do
 
   local job2 = JobManifest.new("stale-test-2", {dirt = 64})
   job2:fault()
-  Assert.isTrue(job2:isStale(), "Faulted job should be stale")
+  Assert.isFalse(job2:isStale(), "Faulted job should be retained for diagnostics")
 end
 Assert.endTest()
