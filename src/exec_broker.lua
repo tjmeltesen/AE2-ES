@@ -928,17 +928,18 @@ function ExecBroker:_transferForJob(addr, active)
       if inputs.items then
         for _, item in ipairs(inputs.items) do
           if dbSlot > self._dbSlots then break end
+          local itemLabel = item.label or item.name or "unknown"
           local filter = { name = item.name or "unknown", damage = item.damage or 0 }
           local ok, err = hal:storeNetworkEntry(meAddr, filter, dbAddr, dbSlot)
           if ok then
             self._logger:info(string.format(
               "TRANSFERRING FOR JOB: %s STORED %s IN DATABASE FOR LANE %s",
-              manifest.id, item.label, laneId))
+              manifest.id, itemLabel, laneId))
             table.insert(active._transferDbSlots.items, {
               dbSlot    = dbSlot,
               fluidDrop = nil,
               name      = item.name,
-              label     = item.label,
+              label     = itemLabel,
             })
             dbSlot = dbSlot + 1
           else
@@ -956,18 +957,19 @@ function ExecBroker:_transferForJob(addr, active)
       if inputs.fluids then
         for _, fluid in ipairs(inputs.fluids) do
           if dbSlot > self._dbSlots then break end
+          local fluidLabel = fluid.label or fluid.name or "unknown"
           -- Filter by the discretized drop label ("drop of <fluid>")
-          local filter = { label = "drop of " .. fluid.label }
+          local filter = { label = "drop of " .. fluidLabel }
           local ok, err = hal:storeNetworkEntry(meAddr, filter, dbAddr, dbSlot)
           if ok then
             self._logger:info(string.format(
               "TRANSFERRING FOR JOB: %s STORED %s IN DATABASE FOR LANE %s",
-              manifest.id, fluid.label, laneId))
+              manifest.id, fluidLabel, laneId))
             table.insert(active._transferDbSlots.items, {
               dbSlot    = dbSlot,
               fluidDrop = true,
               name      = fluid.name,
-              label     = fluid.label,
+              label     = fluidLabel,
             })
             dbSlot = dbSlot + 1
           else
