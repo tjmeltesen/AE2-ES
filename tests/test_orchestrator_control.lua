@@ -118,6 +118,38 @@ do
 end
 Assert.endTest()
 
+Assert.startTest("THROTTLE and RESTART require their individual rollout flags")
+do
+  -- enabled=true represents enableRemoteControl alone. Neither mutating
+  -- command may activate until its separate allow flag is set.
+  local controlOnly, _, _, controlOnlyThrottle, controlOnlyRestarts = newOrchestrator()
+  Assert.isFalse(controlOnly:handle(
+    "modem", 124, command("THROTTLE", 100, "control-only-throttle", { interval = 2.5 })
+  ))
+  Assert.isFalse(controlOnly:handle("modem", 124, command("RESTART", 100, "control-only-restart")))
+  Assert.equal(0, #controlOnlyThrottle)
+  Assert.equal(0, controlOnlyRestarts())
+
+  local throttleOnly, _, _, throttleCalls, throttleOnlyRestarts =
+    newOrchestrator({ allowThrottle = true })
+  Assert.isTrue(throttleOnly:handle(
+    "modem", 124, command("THROTTLE", 100, "throttle-enabled", { interval = 2.5 })
+  ))
+  Assert.isFalse(throttleOnly:handle("modem", 124, command("RESTART", 100, "restart-still-disabled")))
+  Assert.equal(1, #throttleCalls)
+  Assert.equal(0, throttleOnlyRestarts())
+
+  local restartOnly, _, _, restartOnlyThrottle, restartCalls =
+    newOrchestrator({ allowRestart = true })
+  Assert.isFalse(restartOnly:handle(
+    "modem", 124, command("THROTTLE", 100, "throttle-still-disabled", { interval = 2.5 })
+  ))
+  Assert.isTrue(restartOnly:handle("modem", 124, command("RESTART", 100, "restart-enabled")))
+  Assert.equal(0, #restartOnlyThrottle)
+  Assert.equal(1, restartCalls())
+end
+Assert.endTest()
+
 Assert.startTest("THROTTLE validates bounded intervals before invoking broker")
 do
   local orchestrator, sent, logs, throttleCalls = newOrchestrator({ allowThrottle = true })

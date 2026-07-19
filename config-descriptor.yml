@@ -46,12 +46,21 @@ fields:
   enableRemoteControl:
     type: boolean
     default: false
+    description: >-
+      Enables authenticated PING/PONG control traffic only. Before enabling
+      THROTTLE or RESTART, complete a documented manual PING soak successfully.
   enableRemoteThrottle:
     type: boolean
     default: false
+    description: >-
+      Enables THROTTLE only after enableRemoteControl is true and the manual
+      PING soak precondition has been completed.
   enableRemoteRestart:
     type: boolean
     default: false
+    description: >-
+      Enables RESTART only after enableRemoteControl is true and the manual
+      PING soak precondition has been completed.
   controlAuthSecret:
     type: string
     default: ""

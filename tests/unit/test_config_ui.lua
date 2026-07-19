@@ -291,6 +291,9 @@ do
     assert_false(config.enableAutoCrafting, "2.1: auto-crafting remains opt-in")
     assert_equal(#config.autoCraftInputs, 0, "2.1: auto-craft whitelist is empty")
     assert_false(config.enableDiscovery, "2.1: discovery remains opt-in")
+    assert_false(config.enableRemoteControl, "2.1: remote control remains opt-in")
+    assert_false(config.enableRemoteThrottle, "2.1: remote throttle remains opt-in")
+    assert_false(config.enableRemoteRestart, "2.1: remote restart remains opt-in")
 
     -- Test 2.2: redstoneSide has a default
     assert_equal(config.redstoneSide, 5, "2.2: redstoneSide defaults to 5")
@@ -592,6 +595,9 @@ do
     ui._config.telemetryPort = 999
     ui._config.controlPort = 1245
     ui._config.useStateMachine = true
+    ui._config.enableRemoteControl = true
+    ui._config.enableRemoteThrottle = true
+    ui._config.enableRemoteRestart = false
     ui._config.enableAutoCrafting = true
     ui._config.autoCraftInputs = { { name = "minecraft:iron_ingot", amount = 64 } }
     ui._config.enableDiscovery = true
@@ -608,6 +614,9 @@ do
     assert_equal(execCfg.telemetryPort, 999, "7.1: telemetryPort passed through")
     assert_equal(execCfg.controlPort, 1245, "7.1: control port passed through")
     assert_true(execCfg.useStateMachine, "7.1: state-machine flag passed through")
+    assert_true(execCfg.enableRemoteControl, "7.1: remote control flag passed through")
+    assert_true(execCfg.enableRemoteThrottle, "7.1: remote throttle flag passed through")
+    assert_false(execCfg.enableRemoteRestart, "7.1: remote restart stays independently disabled")
     assert_true(execCfg.enableDiscovery, "7.1: discovery flag passed through")
     assert_true(execCfg.enableAutoCrafting, "7.1: auto-crafting flag passed through")
     assert_equal(execCfg.autoCraftInputs[1].name, "minecraft:iron_ingot",
