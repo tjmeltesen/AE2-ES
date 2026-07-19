@@ -147,7 +147,7 @@ local memDelta = memAfter - memBefore
 local memDeltaSoak = memAfterSoak - memBefore
 -- Check for memory leak (> 100% growth — soak tests already validate
 -- per-group flatness at 15%; this macroscopic check is a safety net)
-local memoryLeakDetected = (memBefore > 0) and (memDelta > memBefore * 1.0)
+local memoryLeakDetected = (memBefore > 0) and (memDeltaSoak > memBefore * 1.0)
 local yieldGapOver4s = (elapsed > 4.0)
 local allPassed = (totalFailures == 0) and (not memoryLeakDetected) and (not yieldGapOver4s) and (jobCrashes == 0)
 
@@ -159,6 +159,7 @@ local report = {
   gc_memory_after_kb = round(memAfter, 1),
   gc_memory_delta_kb = round(memDelta, 1),
   gc_memory_after_soak_kb = round(memAfterSoak, 1),
+  gc_memory_delta_soak_kb = round(memDeltaSoak, 1),
   tests_run = totalTests,
   assertions = totalAssertions,
   failures = totalFailures,
@@ -171,6 +172,8 @@ local report = {
 -- =========================================================================
 -- Output
 -- =========================================================================
+_G.TIER3_REPORT = report
+
 -- Print full test summary via Assert
 Assert.summary()
 
@@ -203,7 +206,7 @@ else
     print(string.format("FAIL: %d test failure(s)", totalFailures))
   end
   if memoryLeakDetected then
-    print(string.format("FAIL: Memory leak detected (%.1f KB growth)", memDelta))
+    print(string.format("FAIL: Memory leak detected during soak (%.1f KB growth)", memDeltaSoak))
   end
   if yieldGapOver4s then
     print(string.format("FAIL: Yield gap %.1fs exceeds 4s threshold", elapsed))

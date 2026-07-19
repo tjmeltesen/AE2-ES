@@ -1395,6 +1395,12 @@ function ExecBroker:_cleanupJob(laneId, active)
         "CLEANUP: lane %s job %s COMPLETED (age=%ds)",
         laneId, manifest.id, math.floor(manifest:age())))
     end
+    -- Release JIT tables while keeping COMPLETED status for diagnostics
+    manifest._inputRegistry = nil
+    manifest._hardwareBinds = nil
+    manifest._transferPlan = nil
+    manifest._processingLog = nil
+    manifest._errorLog = nil
   elseif manifest.status == "FAULTED" then
     self._stats.jobsFaulted = self._stats.jobsFaulted + 1
     self._stats.totalJobTime = self._stats.totalJobTime + math.floor(manifest:age())

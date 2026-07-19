@@ -13,7 +13,6 @@ Detects: memory leaks, yield gaps > 4s, job crashes.
 import json
 import sys
 import os
-import time
 
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.chdir(project_root)
@@ -71,24 +70,29 @@ except Exception as e:
     print(f"ERROR loading mock_env: {e}")
     sys.exit(1)
 
+
+def lua_table_to_dict(table):
+    """Convert a lupa Lua table to a plain Python dict."""
+    if table is None:
+        return None
+    return {key: table[key] for key in table}
+
+
 # Run the tier3 Lua runner
 print("\nAE2-ES Tier 3 Extended Soak Test Suite")
 print("=" * 50)
 print()
 
-start_time = time.time()
-
-# Memory baseline
-lua.execute('collectgarbage("collect")')
-try:
-    mem_before = lua.eval('collectgarbage("count")')
-except Exception:
-    mem_before = 0
+# Stub os.exit so dofile returns and _G.TIER3_REPORT remains readable
+lua.execute("""
+    os.exit = function(code)
+        _G.TIER3_EXIT_CODE = code or 0
+    end
+""")
 
 success = True
 job_crashes = 0
 
-# Run tier3 Lua test runner
 try:
     lua.execute('dofile("tests/run_tier3.lua")')
 except Exception as e:
@@ -96,51 +100,26 @@ except Exception as e:
     success = False
     job_crashes = 1
 
-elapsed = time.time() - start_time
+# Read performance report from Lua (soak-phase memory gate)
+lua_report = lua_table_to_dict(lua.globals().TIER3_REPORT)
+if lua_report is None:
+    print("ERROR: TIER3_REPORT not set by Lua runner", file=sys.stderr)
+    sys.exit(1)
 
-# Memory after
-lua.execute('collectgarbage("collect")')
-try:
-    mem_after = lua.eval('collectgarbage("count")')
-except Exception:
-    mem_after = 0
+memory_leak = bool(lua_report.get("memory_leak_detected", False))
+yield_gap = bool(lua_report.get("yield_gap_over_4s", False))
+failures = int(lua_report.get("failures", 0))
+job_crashes = max(job_crashes, int(lua_report.get("job_crashes", 0)))
+mem_delta_soak = float(lua_report.get("gc_memory_delta_soak_kb", 0))
 
-# Get test results
-try:
-    results = list(lua.eval('require("tests.helpers.assertions").getResults()'))
-    total_tests = len(results)
-    total_assertions = sum(t.get('assertions', 0) for t in results)
-    failures = sum(1 for t in results if t.get('failures', 0) > 0)
-except Exception:
-    total_tests = 0
-    total_assertions = 0
-    failures = 0
-
-# Check for memory leak (> 15% growth)
-mem_delta = mem_after - mem_before
-# Use 100% threshold for macroscopic check (soak tests already validate
-# per-group flatness at 15%; this is a safety net for egregious leaks)
-memory_leak = mem_before > 0 and mem_delta > mem_before * 1.0
-
-# Check for yield gap > 4s
-yield_gap = elapsed > 4.0
-
-# Build performance report
-report = {
-    "tier": "Tier 3",
-    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    "elapsed_seconds": round(elapsed, 3),
-    "gc_memory_before_kb": round(mem_before, 1),
-    "gc_memory_after_kb": round(mem_after, 1),
-    "gc_memory_delta_kb": round(mem_delta, 1),
-    "tests_run": total_tests,
-    "assertions": total_assertions,
-    "failures": failures,
-    "memory_leak_detected": memory_leak,
-    "yield_gap_over_4s": yield_gap,
-    "job_crashes": job_crashes,
-    "success": success and failures == 0 and not memory_leak and not yield_gap,
-}
+report = dict(lua_report)
+report["success"] = (
+    success
+    and failures == 0
+    and not memory_leak
+    and not yield_gap
+    and job_crashes == 0
+)
 
 report_path = "tier3-performance-report.json"
 with open(report_path, "w") as f:
@@ -155,10 +134,14 @@ if not success or failures > 0:
     sys.exit(1)
 
 if memory_leak:
-    print(f"FAIL: Memory leak detected! ({mem_delta:.1f} KB delta, {mem_before:.1f} -> {mem_after:.1f})", file=sys.stderr)
+    print(
+        f"FAIL: Memory leak detected during soak! ({mem_delta_soak:.1f} KB soak delta)",
+        file=sys.stderr,
+    )
     sys.exit(1)
 
 if yield_gap:
+    elapsed = float(lua_report.get("elapsed_seconds", 0))
     print(f"FAIL: Yield gap {elapsed:.1f}s exceeds 4s threshold!", file=sys.stderr)
     sys.exit(1)
 
