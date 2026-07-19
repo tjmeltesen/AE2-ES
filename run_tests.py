@@ -176,8 +176,17 @@ if generator_result.returncode != 0:
 
 # Print summary
 try:
-    success = lua.eval('require("tests.helpers.assertions").summary()')
-    all_passed = all_passed and success
+    assertion_failures = lua.eval("""
+        (function()
+            local failures = 0
+            for _, result in ipairs(require("tests.helpers.assertions").getResults()) do
+                failures = failures + (result.failures or 0)
+            end
+            return failures
+        end)()
+    """)
+    lua.execute('require("tests.helpers.assertions").summary()')
+    all_passed = all_passed and assertion_failures == 0
 except Exception as e:
     print(f"Error getting summary: {e}")
     all_passed = False
