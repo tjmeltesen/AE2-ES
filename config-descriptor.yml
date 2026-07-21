@@ -1,0 +1,106 @@
+schemaVersion: 1
+description: >-
+  Persisted Exec Broker configuration fields consumed by src/config_ui.lua.
+  This descriptor produces ae2es_broker.cfg data; it is not the DI config.lua
+  module introduced by the program-framework phase.
+fields:
+  brokerId:
+    type: string
+    default: ""
+  modemAddress:
+    type: string
+    default: ""
+  telemetryPort:
+    type: integer
+    default: 123
+  controlPort:
+    type: integer
+    default: 124
+  usePhaseModules:
+    type: boolean
+    default: false
+    description: >-
+      Delegates broker phases to standalone src/phases/*.lua modules that
+      receive only their required state via constructor injection,
+      eliminating the star topology. Keep false until verified in CI.
+  useProgramFramework:
+    type: boolean
+    default: false
+  useTimeSliceScheduler:
+    type: boolean
+    default: false
+  useCoroutineTransfer:
+    type: boolean
+    default: false
+  enableAutoCrafting:
+    type: boolean
+    default: false
+  autoCraftInputs:
+    type: list
+    default: []
+  enableDiscovery:
+    type: boolean
+    default: false
+  minMachines:
+    type: integer
+    default: 1
+  enablePersistence:
+    type: boolean
+    default: false
+  enableRemoteControl:
+    type: boolean
+    default: false
+    description: >-
+      Enables authenticated PING/PONG control traffic only. Before enabling
+      THROTTLE or RESTART, complete a documented manual PING soak successfully.
+  enableRemoteThrottle:
+    type: boolean
+    default: false
+    description: >-
+      Enables THROTTLE only after enableRemoteControl is true and the manual
+      PING soak precondition has been completed.
+  enableRemoteRestart:
+    type: boolean
+    default: false
+    description: >-
+      Enables RESTART only after enableRemoteControl is true and the manual
+      PING soak precondition has been completed.
+  controlAuthSecret:
+    type: string
+    default: ""
+  machines:
+    type: list
+    default: []
+  machineTypes:
+    type: map
+    default: {}
+  redstoneAddress:
+    type: string
+    default: ""
+  redstoneSide:
+    type: integer
+    default: 5
+  meControllerAddr:
+    type: string
+    default: ""
+  databaseAddr:
+    type: string
+    default: ""
+  machineTransposers:
+    type: map
+    default: {}
+  pollInterval:
+    type: number
+    default: 0.5
+  heartbeatInterval:
+    type: number
+    default: 2.0
+  debounceWindow:
+    type: number
+    default: 1.5
+  queueSize:
+    type: integer
+    default: 64
+  dbSlots:
+    type: integer
+    default: 9

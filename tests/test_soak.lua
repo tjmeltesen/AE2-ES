@@ -513,9 +513,11 @@ do
       Assert.isTrue(job:isJITCleaned(), "Completed job JIT cleaned")
     end
 
-    -- Verify isStale works for both paths
-    if job.state == JobManifest.STATE.COMPLETE or job.state == JobManifest.STATE.FAULTED then
-      Assert.isTrue(job:isStale(), "COMPLETE/FAULTED job is stale")
+    -- COMPLETE jobs are cleanup sentinels; FAULTED jobs retain diagnostics.
+    if job.state == JobManifest.STATE.COMPLETE then
+      Assert.isTrue(job:isStale(), "COMPLETE job is stale")
+    elseif job.state == JobManifest.STATE.FAULTED then
+      Assert.isFalse(job:isStale(), "FAULTED job is retained")
     end
 
     if i % 400 == 0 then collectgarbage("step", 100) end

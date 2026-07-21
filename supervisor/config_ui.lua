@@ -16,7 +16,7 @@
 --   healthCheckInterval, ttdThresholds, dashboardLayout, brokerRegistry
 --
 -- Dependencies:
---   src/ui/common.lua — Shared UI widget library
+--   lib/ui_common.lua — Shared UI widget library
 --   component, event, serialization — OpenComputers APIs
 --   filesystem — OC file I/O
 --
@@ -45,7 +45,7 @@ local ok_s, _ = pcall(function() serialization = require("serialization") end)
 if not ok_s or not serialization then
     serialization = _G.serialization or {}
 end
-local UI = require("src.ui.common")
+local UI = require("lib.ui_common")
 
 --=============================================================================
 -- Constants
@@ -55,7 +55,14 @@ local CONFIG_PATH = "/home/ae2es_supervisor.cfg"
 
 -- Default configuration (mirrors supervisor.lua CONFIG defaults)
 local DEFAULT_CONFIG = {
-    supervisorPort     = 100,
+    supervisorPort     = 123,
+    supervisorId       = "supervisor",
+    useProgramFramework = false,
+    controlPort        = 124,
+    enableRemoteControl = false,
+    enableRemoteThrottle = false,
+    enableRemoteRestart = false,
+    controlAuthSecret = "",
     maxQueueSize       = 1000,
     queueTrimTarget    = 500,
     maxLogEntries      = 200,
@@ -142,12 +149,14 @@ end
 --=============================================================================
 
 --- Load configuration from the config file.
+---@param path string|nil Optional config path
 --- @return table|nil config, string|nil error
-function ConfigUI.load_config()
+function ConfigUI.load_config(path)
+    path = path or CONFIG_PATH
     local fs_ok, fs = pcall(require, "filesystem")
     if not fs_ok or not fs then
         -- Standalone Lua: try io.open directly
-        local file, err = io.open(CONFIG_PATH, "r")
+        local file, err = io.open(path, "r")
         if not file then
             return nil, "cannot open config file: " .. tostring(err)
         end
@@ -163,11 +172,11 @@ function ConfigUI.load_config()
         return data, nil
     end
 
-    if not fs.exists(CONFIG_PATH) then
+    if not fs.exists(path) then
         return nil, "config file not found"
     end
 
-    local file, err = io.open(CONFIG_PATH, "r")
+    local file, err = io.open(path, "r")
     if not file then
         return nil, "cannot open config file: " .. tostring(err)
     end
@@ -974,7 +983,7 @@ end
 --- Edit a specific modem field by index (1-5).
 function ConfigUI:_edit_modem_field(idx)
     local fields = {
-        { key = "supervisorPort",     label = "Supervisor port",     default = 100 },
+        { key = "supervisorPort",     label = "Supervisor port",     default = 123 },
         { key = "maxQueueSize",       label = "Max queue size",      default = 1000 },
         { key = "queueTrimTarget",    label = "Queue trim target",   default = 500 },
         { key = "healthCheckInterval", label = "Health check interval", default = 5.0 },

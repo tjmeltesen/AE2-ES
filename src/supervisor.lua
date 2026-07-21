@@ -10,10 +10,21 @@
 --   Exec Brokers broadcast serialized TelemetryPayload on port SUPERVISOR_PORT
 --   Supervisor never acknowledges (fire-and-forget per architectural constraint)
 
-local component = require("component")
-local event = require("event")
-local computer = require("computer")
-local TelemetryPayload = require("src.telemetrypayload")
+local BoundedList = require("lib.bounded_list")
+
+local function safeRequire(name)
+  local ok, module = pcall(require, name)
+  if ok then return module end
+  return nil
+end
+
+local function uptime()
+  local computer = safeRequire("computer")
+  if computer and type(computer.uptime) == "function" then
+    return computer.uptime()
+  end
+  return os.clock()
+end
 
 --- ============================================================
 --- Configuration
@@ -21,7 +32,13 @@ local TelemetryPayload = require("src.telemetrypayload")
 
 local CONFIG = {
   -- Modem listening port (must match exec_broker broadcast port)
-  supervisorPort = 100,
+  supervisorPort = 123,
+  -- Authenticated, opt-in commands only; telemetry is never sent here.
+  controlPort = 124,
+  enableRemoteControl = false,
+  enableRemoteThrottle = false,
+  enableRemoteRestart = false,
+  controlAuthSecret = "",
   -- Maximum events to retain in FIFO queue per consumer poll cycle
   maxQueueSize = 1000,
   -- Queue trim threshold (how many to keep when exceeded)
@@ -51,7 +68,10 @@ TelemetryQueue.__index = TelemetryQueue
 --- @return TelemetryQueue
 function TelemetryQueue.new(maxSize, trimTarget)
   return setmetatable({
-    _queue = {},
+    _queue = BoundedList.new(
+      maxSize or CONFIG.maxQueueSize,
+      trimTarget or CONFIG.queueTrimTarget
+    ),
     _maxSize = maxSize or CONFIG.maxQueueSize,
     _trimTarget = trimTarget or CONFIG.queueTrimTarget,
     _pushCount = 0,
@@ -64,23 +84,18 @@ end
 --- Trims oldest entries when maxSize exceeded to prevent memory leaks.
 --- @param payload TelemetryPayload
 function TelemetryQueue:push(payload)
-  table.insert(self._queue, payload)
+  local beforeSize = self._queue:size()
+  self._queue:push(payload)
   self._pushCount = self._pushCount + 1
 
-  -- Trim if over capacity
-  if #self._queue > self._maxSize then
-    local toRemove = #self._queue - self._trimTarget
-    for _ = 1, toRemove do
-      table.remove(self._queue, 1)
-    end
-    self._droppedCount = self._droppedCount + toRemove
-  end
+  local expectedSize = beforeSize + 1
+  self._droppedCount = self._droppedCount + expectedSize - self._queue:size()
 end
 
 --- Pop the oldest telemetry payload from the queue.
 --- @return TelemetryPayload|nil
 function TelemetryQueue:pop()
-  local payload = table.remove(self._queue, 1)
+  local payload = table.remove(self._queue:toTable(), 1)
   if payload then
     self._popCount = self._popCount + 1
   end
@@ -90,29 +105,27 @@ end
 --- Peek at the oldest entry without removing it.
 --- @return TelemetryPayload|nil
 function TelemetryQueue:peek()
-  return self._queue[1]
+  return self._queue:toTable()[1]
 end
 
 --- Get current queue depth.
 --- @return number
 function TelemetryQueue:count()
-  return #self._queue
+  return self._queue:size()
 end
 
 --- Clear all entries. Returns the number of entries cleared.
 --- @return number cleared
 function TelemetryQueue:clear()
-  local count = #self._queue
-  self._queue = {}
-  return count
+  return self._queue:clear()
 end
 
 --- Drain all entries into a new table (for batch consumer processing).
 --- Efficient for consumers that process all pending messages at once.
 --- @return TelemetryPayload[] entries
 function TelemetryQueue:drain()
-  local entries = self._queue
-  self._queue = {}
+  local entries = self._queue:toTable()
+  self._queue:clear()
   self._popCount = self._popCount + #entries
   return entries
 end
@@ -121,7 +134,7 @@ end
 --- @return table { count, pushed, popped, dropped }
 function TelemetryQueue:stats()
   return {
-    count = #self._queue,
+    count = self._queue:size(),
     pushed = self._pushCount,
     popped = self._popCount,
     dropped = self._droppedCount,
@@ -155,6 +168,7 @@ function Supervisor.new(config)
     _queue = TelemetryQueue.new(cfg.maxQueueSize, cfg.queueTrimTarget),
     _activeBrokers = {},
     _running = false,
+    _stopped = false,
     _consumers = {},
     _stats = {
       startTime = 0,
@@ -164,9 +178,75 @@ function Supervisor.new(config)
       lastMessageTime = 0,
       lastBrokerId = nil,
     },
-    _log = {},
+    _log = BoundedList.new(cfg.maxLogEntries),
     _logIndex = 0,
+    _controlHandler = nil,
+    _telemetryPayload = config and config.telemetryPayload or safeRequire("src.telemetrypayload"),
   }, Supervisor)
+end
+
+--- Attach the opt-in authenticated control handler before initialize().
+function Supervisor:setControlHandler(handler)
+  self._controlHandler = handler
+end
+
+--- Send an authenticated, unicast control message to a configured broker.
+function Supervisor:sendControl(address, brokerId, command, fields)
+  if not self._controlHandler then return false, "remote control disabled" end
+  return self._controlHandler:send(address, brokerId, command, fields)
+end
+
+--- Initialize the subscriber without taking ownership of event.pull().
+--- Used by lib.program_framework; legacy start() retains the blocking loop.
+function Supervisor:initialize()
+  if self._running then return false, "supervisor already running" end
+  local ok, err = self:_initModem()
+  if not ok then return false, err end
+
+  self._running = true
+  self._stopped = false
+  self._stats.startTime = uptime()
+  self:_logMessage("INFO", "Supervisor event loop started")
+  return true, nil
+end
+
+--- Process one event supplied by an external event-loop owner.
+---@param signal table Event arguments as returned by event.pull()
+---@return boolean Whether the supervisor should continue running
+function Supervisor:handleEvent(signal)
+  local signalName = signal[1]
+  if signalName == "modem_message" then
+    local _, _, fromAddr, port, _, payload = table.unpack(signal)
+    if port == self._config.supervisorPort then
+      self:_processMessage(fromAddr, port, payload)
+    elseif self._controlHandler and port == self._config.controlPort then
+      self._controlHandler:handle(fromAddr, port, payload)
+    end
+  elseif signalName == "interrupted" then
+    self:_logMessage("INFO", "Interrupt signal received, shutting down")
+    self._running = false
+  elseif signalName == "key_down" then
+    local char = signal[3]
+    if char == 113 then
+      self:_logMessage("INFO", "User requested shutdown (q key)")
+      self._running = false
+    elseif char == 115 then
+      self:printStatus()
+    elseif char == 99 then
+      local cleared = self._queue:clear()
+      self:_logMessage("INFO", string.format("Queue cleared (%d entries)", cleared))
+    end
+  end
+  return self._running
+end
+
+--- Release modem resources once after either legacy or framework execution.
+function Supervisor:shutdown()
+  if self._stopped then return end
+  self._stopped = true
+  self._running = false
+  self:_closeModem()
+  self:_logMessage("INFO", "Supervisor stopped")
 end
 
 --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
@@ -180,14 +260,11 @@ function Supervisor:_logMessage(level, message)
   self._logIndex = self._logIndex + 1
   local entry = {
     id = self._logIndex,
-    timestamp = computer.uptime(),
+    timestamp = uptime(),
     level = level,
     message = message,
   }
-  table.insert(self._log, entry)
-  if #self._log > self._config.maxLogEntries then
-    table.remove(self._log, 1)
-  end
+  self._log:push(entry)
 end
 
 -- Public log entry method (called by GlobalLogger, dashboard, etc.)
@@ -201,15 +278,16 @@ end
 -- @param count number|nil Number of entries to return (default: all)
 -- @return table[]
 function Supervisor:getLog(count)
-  if count and count < #self._log then
-    local start = #self._log - count + 1
+  local log = self._log:toTable()
+  if count and count < self._log:size() then
+    local start = self._log:size() - count + 1
     local result = {}
-    for i = start, #self._log do
-      table.insert(result, self._log[i])
+    for i = start, self._log:size() do
+      table.insert(result, log[i])
     end
     return result
   end
-  return self._log
+  return log
 end
 
 --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
@@ -219,6 +297,10 @@ end
 --- Initialize modem component and open listening port.
 --- @return boolean success, string|nil error
 function Supervisor:_initModem()
+  local component = safeRequire("component")
+  if not component or type(component.isAvailable) ~= "function" then
+    return false, "component API unavailable"
+  end
   if not component.isAvailable("modem") then
     return false, "no modem component available"
   end
@@ -229,6 +311,14 @@ function Supervisor:_initModem()
   local ok, err = pcall(self._modem.open, self._config.supervisorPort)
   if not ok then
     return false, "failed to open port " .. self._config.supervisorPort .. ": " .. tostring(err)
+  end
+  if self._controlHandler and self._controlHandler:isEnabled() then
+    local controlOk, controlErr = pcall(self._modem.open, self._config.controlPort)
+    if not controlOk then
+      pcall(self._modem.close, self._config.supervisorPort)
+      return false, "failed to open control port " .. self._config.controlPort .. ": " .. tostring(controlErr)
+    end
+    self._controlHandler:setModem(self._modem)
   end
 
   self:_logMessage("INFO", string.format(
@@ -241,6 +331,9 @@ end
 function Supervisor:_closeModem()
   if self._modem then
     pcall(self._modem.close, self._config.supervisorPort)
+    if self._controlHandler and self._controlHandler:isEnabled() then
+      pcall(self._modem.close, self._config.controlPort)
+    end
     self:_logMessage("INFO", "Modem port closed")
   end
 end
@@ -283,10 +376,10 @@ end
 --- @param payload string Raw serialized data
 function Supervisor:_processMessage(from, port, payload)
   self._stats.messagesReceived = self._stats.messagesReceived + 1
-  self._stats.lastMessageTime = computer.uptime()
+  self._stats.lastMessageTime = uptime()
 
   -- Step 1: Deserialize
-  local telemetry, err = TelemetryPayload.deserialize(payload)
+  local telemetry, err = self._telemetryPayload.deserialize(payload)
   if not telemetry then
     self._stats.messagesInvalid = self._stats.messagesInvalid + 1
     self:_logMessage("WARN", string.format(
@@ -307,7 +400,7 @@ function Supervisor:_processMessage(from, port, payload)
 
   self._stats.messagesValid = self._stats.messagesValid + 1
   self._stats.lastBrokerId = telemetry.brokerId
-  self._activeBrokers[telemetry.brokerId] = computer.uptime()
+  self._activeBrokers[telemetry.brokerId] = uptime()
 
   -- Step 3: Enqueue into FIFO (for polling consumers like B5 Dashboard)
   self._queue:push(telemetry)
@@ -336,20 +429,14 @@ end
 --- Start the main event loop. Blocks until interrupted or stop() is called.
 --- @return boolean success, string|nil error
 function Supervisor:start()
-  if self._running then
-    return false, "supervisor already running"
+  local ok, err = self:initialize()
+  if not ok then return false, err end
+
+  local event = safeRequire("event")
+  if not event then
+    self:shutdown()
+    return false, "event API unavailable"
   end
-
-  -- Initialize modem
-  local ok, err = self:_initModem()
-  if not ok then
-    return false, err
-  end
-
-  self._running = true
-  self._stats.startTime = computer.uptime()
-  self:_logMessage("INFO", "Supervisor event loop started")
-
   -- Periodic health check timer (fires every healthCheckInterval seconds)
   local healthTimer = event.timer(self._config.healthCheckInterval, function()
     self:_healthCheck()
@@ -360,52 +447,22 @@ function Supervisor:start()
   -- This is the non-blocking architecture: no polling, no busy-waiting
   while self._running do
     local signal = {event.pull()}
-    local signalName = signal[1]
-
-    if signalName == "modem_message" then
-      -- modem_message arguments:
-      --   (_, _, fromAddr, port, distance, ...payload...)
-      local _, _, fromAddr, port, _, payload = table.unpack(signal)
-
-      -- Filter to our port only (modem_message arrives for all open ports)
-      if port == self._config.supervisorPort then
-        self:_processMessage(fromAddr, port, payload)
-      end
-
-    elseif signalName == "interrupted" then
-      -- Ctrl+C or shutdown signal from the OS
-      self:_logMessage("INFO", "Interrupt signal received, shutting down")
-      self._running = false
-
-    elseif signalName == "key_down" then
-      -- Keyboard shortcuts for interactive control
-      -- signal[3] = char code, signal[4] = key code
-      local char = signal[3]
-      if char == 113 then         -- 'q' key: quit
-        self:_logMessage("INFO", "User requested shutdown (q key)")
-        self._running = false
-      elseif char == 115 then     -- 's' key: print status
-        self:printStatus()
-      elseif char == 99 then      -- 'c' key: clear queue
-        local cleared = self._queue:clear()
-        self:_logMessage("INFO", string.format(
-          "Queue cleared (%d entries)", cleared
-        ))
-      end
-    end
+    self:handleEvent(signal)
   end
 
   -- Cleanup
   event.cancel(healthTimer)
-  self:_closeModem()
-  self:_logMessage("INFO", "Supervisor stopped")
+  self:shutdown()
   return true, nil
 end
 
 --- Signal the event loop to stop gracefully.
 function Supervisor:stop()
   self._running = false
-  pcall(computer.pushSignal, "ae2es_supervisor_stop")
+  local computer = safeRequire("computer")
+  if computer and type(computer.pushSignal) == "function" then
+    pcall(computer.pushSignal, "ae2es_supervisor_stop")
+  end
 end
 
 --- Check if the supervisor is currently running.
@@ -432,8 +489,8 @@ function Supervisor:_healthCheck()
   end
 
   -- Log if no messages received recently
-  local uptime = computer.uptime()
-  local idleTime = uptime - self._stats.lastMessageTime
+  local currentTime = uptime()
+  local idleTime = currentTime - self._stats.lastMessageTime
   if self._stats.lastMessageTime > 0 and idleTime > 60 then
     self:_logMessage("INFO", string.format(
       "No messages received for %.0f seconds", idleTime
@@ -443,7 +500,7 @@ end
 
 --- Print current status summary to stdout (for interactive terminals).
 function Supervisor:printStatus()
-  local uptime = computer.uptime() - self._stats.startTime
+  local elapsed = uptime() - self._stats.startTime
   local queueStats = self._queue:stats()
   local sinceLastMsg = 0
   if self._stats.lastMessageTime > 0 then
@@ -460,7 +517,7 @@ function Supervisor:printStatus()
   Consumers:       %d registered
 ════════════════════════════════
 ]],
-    uptime,
+    elapsed,
     self._stats.messagesReceived,
     self._stats.messagesValid,
     self._stats.messagesInvalid,
@@ -495,10 +552,10 @@ end
 function Supervisor:getStats()
   local sinceLastMsg = nil
   if self._stats.lastMessageTime > 0 then
-    sinceLastMsg = computer.uptime() - self._stats.lastMessageTime
+    sinceLastMsg = uptime() - self._stats.lastMessageTime
   end
   return {
-    uptime = computer.uptime() - self._stats.startTime,
+    uptime = uptime() - self._stats.startTime,
     messages = {
       received = self._stats.messagesReceived,
       valid = self._stats.messagesValid,
@@ -538,7 +595,7 @@ function Supervisor:getBrokerStatus(brokerId)
     return nil
   end
 
-  local elapsed = computer.uptime() - lastHeard
+  local elapsed = uptime() - lastHeard
   if elapsed > self._config.offlineThreshold then
     return "OFFLINE"
   elseif elapsed > self._config.staleThreshold then

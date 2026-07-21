@@ -27,7 +27,7 @@ lua = LuaRuntime(unpack_returned_tuples=True)
 
 # Set up package paths so Lua require() works
 lua.execute("""
-    package.path = "./src/?.lua;./?.lua;./tests/?.lua;./tests/?/init.lua;" ..
+    package.path = "./src/?.lua;./lib/?.lua;./?.lua;./tests/?.lua;./tests/?/init.lua;" ..
                   "./supervisor/?.lua;./supervisor/?/init.lua;" ..
                   "./exec_broker/?.lua;./exec_broker/?/init.lua;" ..
                   package.path

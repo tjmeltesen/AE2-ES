@@ -3,7 +3,7 @@
 -- Unit tests for supervisor/config_ui.lua
 -- Tier 1: Vanilla Lua 5.3, no OC runtime.
 -- Tests the ConfigUI class (construction, config I/O, data access) and the
--- shared UI library (src/ui/common.lua).
+-- shared UI library (lib/ui_common.lua).
 --
 -- Interactive elements (event.pull-based menus, dialogs) are NOT tested in
 -- this suite since they require a live terminal. Instead, we test the data
@@ -148,9 +148,9 @@ local UI
 local ConfigUI
 
 local ok_ui, err_ui = pcall(function()
-    UI = require("src.ui.common")
+    UI = require("lib.ui_common")
 end)
-assert_true(ok_ui, "Load src.ui.common: " .. tostring(err_ui))
+assert_true(ok_ui, "Load lib.ui_common: " .. tostring(err_ui))
 
 -- The ConfigUI module requires event, component - ensure they exist
 local ok_cui, err_cui = pcall(function()
@@ -396,7 +396,7 @@ if ok_cui and ConfigUI then
     assert_table_key(config, "ttdThresholds", "default config has ttdThresholds")
     assert_table_key(config, "dashboardLayout", "default config has dashboardLayout")
     assert_table_key(config, "brokerRegistry", "default config has brokerRegistry")
-    assert_equal(config.supervisorPort, 100, "default supervisorPort")
+    assert_equal(config.supervisorPort, 123, "default supervisorPort")
     assert_equal(config.maxQueueSize, 1000, "default maxQueueSize")
     assert_equal(config.queueTrimTarget, 500, "default queueTrimTarget")
     assert_equal(config.maxLogEntries, 200, "default maxLogEntries")
@@ -447,7 +447,7 @@ if ok_cui and ConfigUI then
     local config_copy = instance:get_config()
     config_copy.supervisorPort = 999
     local config_again = instance:get_config()
-    assert_equal(config_again.supervisorPort, 100, "config isolation: original unchanged")
+    assert_equal(config_again.supervisorPort, 123, "config isolation: original unchanged")
 else
     print("  SKIP: ConfigUI module not available")
 end
@@ -473,7 +473,7 @@ if ok_cui and ConfigUI then
 
     -- 6.3 get_config returns valid config
     local cfg = ui:get_config()
-    assert_equal(cfg.supervisorPort, 100, "get_config supervisorPort")
+    assert_equal(cfg.supervisorPort, 123, "get_config supervisorPort")
 
     -- 6.4 Instance with custom config overrides defaults
     local ui2 = ConfigUI.new({ supervisorPort = 8080 })

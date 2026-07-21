@@ -24,7 +24,7 @@ lua = LuaRuntime(unpack_returned_tuples=True)
 
 # Set up package paths so Lua require() works
 lua.execute("""
-    package.path = "./src/?.lua;./?.lua;./tests/?.lua;./tests/?/init.lua;" .. package.path
+    package.path = "./src/?.lua;./lib/?.lua;./?.lua;./tests/?.lua;./tests/?/init.lua;" .. package.path
 """)
 
 # Provide bit32 for LuaJIT (which doesn't have it natively)
@@ -82,6 +82,7 @@ except Exception as e:
 
 # Define test files
 test_files = [
+    "tests.test_import_safety",
     "tests.test_runtime_graph",
     "tests.test_jit_db_cleanup",
     "tests.test_telemetry_serialization",
@@ -91,8 +92,21 @@ test_files = [
     "tests.test_integration",
     "tests.test_soak",
     "tests.test_timeslicescheduler",
+    "tests.test_scheduler_integration",
+    "tests.test_program_framework",
+    "tests.test_state_machine",
     "tests.test_state_transitions",
+    "tests.test_bounded_list",
+    "tests.test_pubsub_logging",
+    "tests.test_transfer_clear_and_fluids",
+    "tests.test_coroutine_transfer",
+    "tests.test_machine_discovery",
+    "tests.test_hal_sensor_parser",
+    "tests.test_auto_crafting",
+    "tests.test_persistence",
+    "tests.test_orchestrator_control",
     "tests.test_profiler",
+    "tests.test_phase_modules",
     "tests.unit.test_config_ui",
     "tests.unit.test_supervisor_config_ui",
 ]
@@ -151,10 +165,30 @@ if dashboard_result.returncode != 0:
     print(f"  ERROR in dashboard suite: exit code {dashboard_result.returncode}")
     all_passed = False
 
+# The generator is a Python CLI, but its output must remain loadable by
+# ConfigUI. Keep that contract in the default Tier 1 suite.
+generator_result = subprocess.run(
+    [sys.executable, os.path.join(project_root, "tests", "test_generate_config.py")],
+    cwd=project_root,
+    check=False,
+)
+if generator_result.returncode != 0:
+    print(f"  ERROR in config generator suite: exit code {generator_result.returncode}")
+    all_passed = False
+
 # Print summary
 try:
-    success = lua.eval('require("tests.helpers.assertions").summary()')
-    all_passed = all_passed and success
+    assertion_failures = lua.eval("""
+        (function()
+            local failures = 0
+            for _, result in ipairs(require("tests.helpers.assertions").getResults()) do
+                failures = failures + (result.failures or 0)
+            end
+            return failures
+        end)()
+    """)
+    lua.execute('require("tests.helpers.assertions").summary()')
+    all_passed = all_passed and assertion_failures == 0
 except Exception as e:
     print(f"Error getting summary: {e}")
     all_passed = False

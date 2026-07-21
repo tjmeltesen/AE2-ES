@@ -288,6 +288,12 @@ do
     assert_equal(config.redstoneAddress, "", "2.1: redstoneAddress empty")
     assert_equal(config.redstoneSide, 5, "2.1: redstoneSide defaults to 5")
     assert_equal(config.meControllerAddr, "", "2.1: meControllerAddr empty")
+    assert_false(config.enableAutoCrafting, "2.1: auto-crafting remains opt-in")
+    assert_equal(#config.autoCraftInputs, 0, "2.1: auto-craft whitelist is empty")
+    assert_false(config.enableDiscovery, "2.1: discovery remains opt-in")
+    assert_false(config.enableRemoteControl, "2.1: remote control remains opt-in")
+    assert_false(config.enableRemoteThrottle, "2.1: remote throttle remains opt-in")
+    assert_false(config.enableRemoteRestart, "2.1: remote restart remains opt-in")
 
     -- Test 2.2: redstoneSide has a default
     assert_equal(config.redstoneSide, 5, "2.2: redstoneSide defaults to 5")
@@ -587,6 +593,14 @@ do
     ui._config.brokerId = "exec-target-broker"
     ui._config.modemAddress = "abcd-1234-modem"
     ui._config.telemetryPort = 999
+    ui._config.controlPort = 1245
+    ui._config.useStateMachine = true
+    ui._config.enableRemoteControl = true
+    ui._config.enableRemoteThrottle = true
+    ui._config.enableRemoteRestart = false
+    ui._config.enableAutoCrafting = true
+    ui._config.autoCraftInputs = { { name = "minecraft:iron_ingot", amount = 64 } }
+    ui._config.enableDiscovery = true
     ui._config.machines = { { laneId = "abcd-7890-gtmach", machineAddr = "abcd-7890-gtmach" } }
     ui._config.machineTypes = { ["abcd-7890-gtmach"] = 128 }
     ui._config.pollInterval = 0.25
@@ -598,6 +612,15 @@ do
     assert_not_nil(execCfg, "7.1: Exec config built")
     assert_equal(execCfg.brokerId, "exec-target-broker", "7.1: brokerId passed through")
     assert_equal(execCfg.telemetryPort, 999, "7.1: telemetryPort passed through")
+    assert_equal(execCfg.controlPort, 1245, "7.1: control port passed through")
+    assert_true(execCfg.useStateMachine, "7.1: state-machine flag passed through")
+    assert_true(execCfg.enableRemoteControl, "7.1: remote control flag passed through")
+    assert_true(execCfg.enableRemoteThrottle, "7.1: remote throttle flag passed through")
+    assert_false(execCfg.enableRemoteRestart, "7.1: remote restart stays independently disabled")
+    assert_true(execCfg.enableDiscovery, "7.1: discovery flag passed through")
+    assert_true(execCfg.enableAutoCrafting, "7.1: auto-crafting flag passed through")
+    assert_equal(execCfg.autoCraftInputs[1].name, "minecraft:iron_ingot",
+        "7.1: auto-craft whitelist passed through")
     assert_equal(execCfg.pollInterval, 0.25, "7.1: pollInterval passed through")
     assert_equal(execCfg.heartbeatInterval, 5.0, "7.1: heartbeatInterval passed through")
     assert_equal(execCfg.debounceWindow, 2.0, "7.1: debounceWindow passed through")
@@ -605,7 +628,8 @@ do
 
     -- Test 7.2: HAL config is passed through
     assert_not_nil(execCfg.halConfig, "7.2: halConfig exists")
-    assert_not_nil(execCfg.halConfig, "7.2: halConfig exists")
+    assert_equal(execCfg.halConfig.capabilityMap["abcd-7890-gtmach"], 128,
+        "7.2: machine capability profile is registered with HAL")
 
     -- Test 7.3: Modem is resolved to proxy
     assert_not_nil(execCfg.modem, "7.3: Modem resolved to proxy")
@@ -625,10 +649,34 @@ do
     -- Test 7.5: Machines are included
     assert_not_nil(execCfg.machines, "7.5: Machines table present")
     assert_not_nil(execCfg.machines["abcd-7890-gtmach"], "7.5: Machine entry exists")
+    assert_equal(execCfg.machines["abcd-7890-gtmach"].machineType, "abcd-7890-gtmach",
+        "7.5: machine uses its registered HAL capability key")
 end
 
 --===========================================================================
--- Group 8: Config set/get
+-- Group 8: Component discovery helpers
+--===========================================================================
+do
+    reportGroup("Group 8: Component discovery helpers")
+
+    local Discover = require("lib.component_discover")
+    local comp = makeComponents()
+
+    local modems = Discover.discoverByType(comp, "modem")
+    assert_equal(#modems, 1, "8.1: discoverByType finds modem")
+    assert_equal(modems[1].address, "abcd-1234-modem", "8.1: discovered address")
+
+    local machines = Discover.discoverGtMachines(comp)
+    assert_equal(#machines, 2, "8.2: discoverGtMachines finds GT machines")
+    assert_equal(machines[1].address, "abcd-1111-gtmach", "8.2: machines sorted by address")
+
+    local transposers = Discover.discoverTransposerStorage(comp)
+    assert_equal(#transposers, 1, "8.3: discoverTransposerStorage finds transposer")
+    assert_equal(transposers[1].address, "abcd-1234-transposer", "8.3: transposer address")
+end
+
+--===========================================================================
+-- Group 9: Config set/get
 --===========================================================================
 do
     reportGroup("Group 9: Config set/get")
