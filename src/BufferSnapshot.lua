@@ -279,19 +279,8 @@ end
 --- @param arg1 string (jobId, new API) or table (jobManifestModule, old API)
 --- @param arg2 string (jobId, old API only)
 --- @return table JobManifest
-function BufferSnapshot:convertToManifest(arg1, arg2)
-  local JobManifestMod, jobId
-
-  if type(arg1) == "table" then
-    -- Old API: convertToManifest(jobManifestModule, jobId)
-    JobManifestMod = arg1
-    jobId = arg2
-  else
-    -- New API: convertToManifest(jobId)
-    -- Use root-level JobManifest.lua (canonical version with id, status)
-    JobManifestMod = require("JobManifest")
-    jobId = arg1
-  end
+function BufferSnapshot:convertToManifest(JobManifestMod, jobId)
+  -- Injected: JobManifestMod is the JobManifest constructor table.
 
   local manifest = JobManifestMod.new(jobId)
 
@@ -301,7 +290,7 @@ function BufferSnapshot:convertToManifest(arg1, arg2)
   manifest.updatedAt = os.time()
   -- Preserve both APIs: canonical manifests validate their transition before
   -- the legacy status field is set directly by the production loader.
-  if type(arg1) == "table" and manifest.state then
+  if type(JobManifestMod) == "table" and manifest.state then
     manifest._allowDirectStateTransitions = true
     manifest:updateState("LOGGING")
   else
@@ -316,7 +305,7 @@ function BufferSnapshot:convertToManifest(arg1, arg2)
   }
 
   -- Old API: register each input individually (for _inputRegistry backward compat)
-  if type(arg1) == "table" and manifest.registerInput then
+  if type(JobManifestMod) == "table" and manifest.registerInput then
     if snapshotData.items then
       for _, item in ipairs(snapshotData.items) do
         manifest:registerInput(item.name or item.label or "unknown", item.size or 0)

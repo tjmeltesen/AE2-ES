@@ -67,6 +67,8 @@ function MachineNode.new(hardwareAddress, arg2)
     _pollInterval    = DEFAULT_POLL_INTERVAL,
     _cachedProgress  = 0,
     _lastPollTime    = 0,
+    _healthScore     = 100,
+    _healthIssues    = {},
   }, MachineNode)
 
   if type(arg2) == "table" and arg2.useStateMachine == true then
@@ -241,6 +243,105 @@ end
 function MachineNode:updateHardwareState(progress)
   self._cachedProgress = progress or 0
   self._lastPollTime   = os.time()
+end
+
+------------------------------------------------------------------------
+-- Health assessment (sensor parsing)
+------------------------------------------------------------------------
+
+--- Strip GTNH color control characters from a sensor line.
+-- GT machines embed Minecraft §-style color codes in sensor output.
+-- This strips any non-printable prefix byte followed by an optional second byte.
+-- Pure function — no OC runtime dependencies.
+-- @param line  string  raw sensor line with possible color codes
+-- @return string  cleaned line
+local function stripColorCodes(line)
+  -- Match: any non-whitespace, non-alphanumeric, non-punctuation character
+  -- optionally followed by one more alphanumeric character (the color code body).
+  return line:gsub("[^%s%a%d%p][%a%d]?", "")
+end
+
+--- Parse GT machine sensor lines for dispatch-relevant health issues.
+-- Detects structural problems (hard blockers), maintenance needs, and
+-- power-loss shutdowns. Does NOT require OC runtime — pure string matching.
+-- @param sensorLines  table|nil  string array from getSensorInformation()
+-- @return table  { ok = boolean, healthScore = number (0-100), issues = {string} }
+function MachineNode:parseHealth(sensorLines)
+  local result = { ok = true, healthScore = 100, issues = {} }
+
+  if sensorLines == nil or type(sensorLines) ~= "table" then
+    return result
+  end
+
+  for _, raw in ipairs(sensorLines) do
+    if type(raw) ~= "string" then goto continue end
+    local line = stripColorCodes(raw)
+
+    -- Hard blockers: machine cannot accept work
+    if line:find("Incomplete Structure", 1, true) then
+      result.ok = false
+      result.healthScore = 0
+      table.insert(result.issues, "incomplete_structure")
+    end
+    if line:find("Shut down due to power loss", 1, true) then
+      result.ok = false
+      result.healthScore = 0
+      table.insert(result.issues, "power_loss_shutdown")
+    end
+
+    -- Soft degraders: machine can still work but at reduced reliability
+    if line:find("Maintenance", 1, true) then
+      result.healthScore = result.healthScore - 20
+      table.insert(result.issues, "needs_maintenance")
+    end
+    if line:find("Has Problems", 1, true) then
+      result.healthScore = result.healthScore - 15
+      table.insert(result.issues, "has_problems")
+    end
+
+    -- Progress check: 0/0 means no recipe running, ignore power reading
+    local maxProg = line:match("Progress: .*s ?/ ?([^%s]*) ?s")
+    if maxProg == "0" then
+      -- Idle — this is fine for dispatch; machine is ready for new work
+      result.idle = true
+    end
+
+    ::continue::
+  end
+
+  -- Clamp score
+  if result.healthScore < 0 then result.healthScore = 0 end
+
+  return result
+end
+
+--- Update cached health state from a sensor poll.
+-- Call this after HAL has fetched fresh sensor data.
+-- @param sensorLines  table|nil  string array from getSensorInformation()
+function MachineNode:updateHealth(sensorLines)
+  local parsed = self:parseHealth(sensorLines)
+  self._healthScore  = parsed.healthScore
+  self._healthIssues = parsed.issues
+end
+
+--- Check whether this machine is healthy enough to accept a new job.
+-- Threshold: healthScore >= 80 (allows soft warnings but blocks hard failures).
+-- @return boolean
+function MachineNode:isHealthy()
+  return self._healthScore >= 80
+end
+
+--- Get the current health score (0-100).
+-- Updated by updateHealth() after a sensor poll.
+-- @return number
+function MachineNode:getHealthScore()
+  return self._healthScore
+end
+
+--- Get the list of detected health issue codes (e.g. "needs_maintenance").
+-- @return table  array of issue code strings
+function MachineNode:getHealthIssues()
+  return self._healthIssues
 end
 
 ------------------------------------------------------------------------

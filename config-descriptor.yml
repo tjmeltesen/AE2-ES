@@ -16,9 +16,13 @@ fields:
   controlPort:
     type: integer
     default: 124
-  useStateMachine:
+  usePhaseModules:
     type: boolean
     default: false
+    description: >-
+      Delegates broker phases to standalone src/phases/*.lua modules that
+      receive only their required state via constructor injection,
+      eliminating the star topology. Keep false until verified in CI.
   useProgramFramework:
     type: boolean
     default: false

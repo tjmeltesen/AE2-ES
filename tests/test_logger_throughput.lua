@@ -15,8 +15,8 @@ local Assert = require("tests.helpers.assertions")
 local MockEnv = require("tests.helpers.mock_env")
 MockEnv.setup()
 
-local LogRingBuffer = require("src.log_ring_buffer")
-local LogEntry = require("src.log_entry")
+local LogRingBuffer = require("lib.log_ring_buffer")
+local LogEntry = require("lib.log_entry")
 
 -- ===========================================================================
 -- Helpers

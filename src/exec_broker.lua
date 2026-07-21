@@ -31,6 +31,10 @@ ExecBroker.PHASES = {
   CLEANUP      = "CLEANUP",
 }
 
+-- Eager-load MachineNode at module scope — load failure crashes immediately
+-- instead of silently creating plain-table fallback nodes.
+local _MN = require("src.MachineNode")
+
 -- ===========================================================================
 -- Internal helpers
 -- ===========================================================================
@@ -102,10 +106,6 @@ ExecBroker.DEFAULT_MODULES = {
 --   heartbeatInterval— number, seconds between telemetry broadcasts (default 2.0)
 --   debounceWindow   — number, BufferSnapshot stability window (default 1.5)
 --   useStateMachine  — boolean, opt into shared state-machine dispatch (default false)
---   useTimeSliceScheduler — boolean, budget active jobs and telemetry (default false)
---   timeSliceBudget  — number, seconds available to broker work per tick
---   useCoroutineTransfer — boolean, opt into framework-tracked lane transfers
---   threadRegistry   — framework object exposing registerThread(callback)
 --   enableAutoCrafting — boolean, opt into whitelisted ME auto-crafting
 --   autoCraftInputs  — array of {name, amount, damage?, nbt?} desired buffer minimums
 --   enableDiscovery  — boolean, opt into runtime GT machine discovery
@@ -179,15 +179,16 @@ function ExecBroker.new(config)
     -- Use pre-built node if provided (backward compat), otherwise create one
     local node = lane._node
     if not node then
-      if M.MachineNode and type(M.MachineNode.new) == "function" then
-        node = M.MachineNode.new(machineAddr, {
-          machineType = "gt_machine",
-          hardwareAddress = machineAddr,
-          laneId = laneId,
-          useStateMachine = config.useStateMachine == true,
-        })
-      else
-        node = { address = machineAddr, laneId = laneId }
+      node = _MN.new(machineAddr, {
+        machineType = "gt_machine",
+        hardwareAddress = machineAddr,
+        laneId = laneId,
+        useStateMachine = config.useStateMachine == true,
+      })
+      -- Verify the node got a proper metatable (debug: OC LuaJIT setmetatable issue)
+      local mt = getmetatable(node)
+      if mt == nil then
+        error("MachineNode.new() returned a node without metatable for " .. tostring(laneId))
       end
     end
 
@@ -215,19 +216,21 @@ function ExecBroker.new(config)
     logger = BrokerLogger.new(config.brokerId)
   end
 
-  local timeSliceScheduler = nil
-  if config.useTimeSliceScheduler == true then
-    timeSliceScheduler = config.timeSliceScheduler
-    if timeSliceScheduler == nil then
-      local TimeSliceScheduler = safeRequire("src.timeslicescheduler")
-      assert(TimeSliceScheduler ~= nil,
-        "ExecBroker: time-slice scheduler could not be loaded")
-      timeSliceScheduler = TimeSliceScheduler.new(config.timeSliceBudget)
-    end
-    assert(type(timeSliceScheduler.reset) == "function" and
-      type(timeSliceScheduler.remaining) == "function",
-      "ExecBroker: time-slice scheduler requires reset() and remaining()")
+  -- Always create a time-slice scheduler for cooperative multitasking
+  local timeSliceScheduler = config.timeSliceScheduler
+  if timeSliceScheduler == nil then
+    local TimeSliceScheduler = safeRequire("src.timeslicescheduler")
+    assert(TimeSliceScheduler ~= nil,
+      "ExecBroker: time-slice scheduler could not be loaded")
+    timeSliceScheduler = TimeSliceScheduler.new(config.timeSliceBudget)
   end
+  assert(type(timeSliceScheduler.reset) == "function" and
+    type(timeSliceScheduler.remaining) == "function",
+    "ExecBroker: time-slice scheduler requires reset() and remaining()")
+
+  -- Register singleton so all phases import, not receive, the scheduler
+  local schedulerRegistry = safeRequire("src.scheduler_registry")
+  if schedulerRegistry then schedulerRegistry.set(timeSliceScheduler) end
 
   local persistence = nil
   if config.enablePersistence == true then
@@ -265,6 +268,7 @@ function ExecBroker.new(config)
     _minMachines        = config.minMachines,
     _meControllerAddr = config.meControllerAddr or "",
     _databaseAddr    = config.databaseAddr or "",
+    _maxFluidSides   = config.maxFluidSides or 6,   -- ME Dual Interface fluid sides (0-5)
         _redstoneLockAddr = config.redstoneAddress or "",
         _redstoneLockSide = config.redstoneSide or 5,
 
@@ -284,10 +288,8 @@ function ExecBroker.new(config)
     _tickCount        = 0,
     _running          = true,
     _useStateMachine  = config.useStateMachine == true,
-    _useTimeSliceScheduler = config.useTimeSliceScheduler == true,
+    _intakeBackoff    = nil,        -- sleep intake until this timestamp when stuck
     _timeSliceScheduler = timeSliceScheduler,
-    _useCoroutineTransfer = config.useCoroutineTransfer == true,
-    _threadRegistry    = config.threadRegistry,
     _transferTimeout   = config.transferTimeout or 30,
     _enableAutoCrafting = config.enableAutoCrafting == true,
     _autoCraftInputs   = config.autoCraftInputs or {},
@@ -302,9 +304,6 @@ function ExecBroker.new(config)
 
     -- Active jobs: { [laneId] = { manifest, phase, assignedAt } }
     _activeJobs       = {},
-    _telemetryMatrix  = {},
-    _telemetryCursor  = 1,
-
     -- Statistics
     _stats            = {
       jobsCompleted   = 0,
@@ -317,35 +316,6 @@ function ExecBroker.new(config)
     _eventPull        = config.eventPull,     -- function(timeout) -> signal, ...
     _eventPullFiltered= config.eventPullFiltered,
   }, ExecBroker)
-
-  if self._useStateMachine then
-    local StateMachine = safeRequire("lib.state_machine")
-    assert(StateMachine ~= nil, "ExecBroker: shared state machine could not be loaded")
-    self._stateMachine = StateMachine.new(self._phase, self)
-    self._stateMachine
-      :addState(ExecBroker.PHASES.BUFFERING, {
-        update = function(broker, pollResult)
-          return broker:_phaseBUFFERING(pollResult)
-        end,
-      })
-      :addState(ExecBroker.PHASES.LOGGING, {
-        update = function(broker)
-          return broker:_phaseLOGGING()
-        end,
-      })
-      :addState(ExecBroker.PHASES.ALLOCATING, {
-        update = function(broker)
-          return broker:_phaseALLOCATING()
-        end,
-      })
-      :addState(ExecBroker.PHASES.TRANSFERRING, {
-        update = function(broker)
-          return broker:_phaseTRANSFERRING()
-        end,
-      })
-      :addState(ExecBroker.PHASES.PROCESSING, {})
-      :addState(ExecBroker.PHASES.CLEANUP, {})
-  end
 
   -- Auto-create bufferFeeder from ME Controller if not provided
   -- (config loaded from disk has address but no feeder function)
@@ -385,6 +355,87 @@ function ExecBroker.new(config)
   end
   if self._enablePersistence then
     self:_restorePersistence()
+  end
+
+  -- Phase modules: each receives only the broker state it needs via constructor
+  -- injection, eliminating the star topology.
+  do
+    local BufferingPhase    = safeRequire("src.phases.buffering")
+    local LoggingPhase      = safeRequire("src.phases.logging")
+    local AllocatingPhase   = safeRequire("src.phases.allocating")
+    local TransferringPhase = safeRequire("src.phases.transferring")
+    local ProcessingPhase   = safeRequire("src.phases.processing")
+    local CleanupPhase      = safeRequire("src.phases.cleanup")
+
+    assert(BufferingPhase and LoggingPhase and AllocatingPhase and
+           TransferringPhase and ProcessingPhase and CleanupPhase,
+      "ExecBroker: all phase modules required")
+
+    self._bufferingPhase = BufferingPhase.new({
+      bufferFeeder       = self._bufferFeeder,
+      snapshot           = self._snapshot,
+      logger             = self._logger,
+      enableAutoCrafting = self._enableAutoCrafting,
+      autoCraftInputs    = self._autoCraftInputs,
+      meControllerAddr   = self._meControllerAddr,
+      hal                = self._hal,
+    })
+
+    self._loggingPhase = LoggingPhase.new({
+      snapshot    = self._snapshot,
+      JobManifest = M.JobManifest,
+      queue       = self._queue,
+      logger      = self._logger,
+    })
+
+    self._allocatingPhase = AllocatingPhase.new({
+      queue       = self._queue,
+      machineList = self._machineList,
+      activeJobs  = self._activeJobs,
+      logger      = self._logger,
+      hal         = self._hal,
+      scheduler   = self._timeSliceScheduler,
+    })
+
+    self._transferringPhase = TransferringPhase.new({
+      hal                 = self._hal,
+      machineList         = self._machineList,
+      machineTransposers  = self._machineTransposers,
+      databaseAddr        = self._databaseAddr,
+      meControllerAddr    = self._meControllerAddr,
+      dbSlots             = self._dbSlots,
+      activeJobs          = self._activeJobs,
+      logger              = self._logger,
+      scheduler           = self._timeSliceScheduler,
+      transferTimeout     = self._transferTimeout,
+      redstoneLockAddr    = self._redstoneLockAddr,
+      redstoneLockSide    = self._redstoneLockSide,
+      maxFluidSides       = self._maxFluidSides,
+    })
+
+    self._processingPhase = ProcessingPhase.new({
+      hal                = self._hal,
+      machines           = self._machines,
+      machineTransposers = self._machineTransposers,
+      reports            = self._reports,
+      stats              = self._stats,
+      activeJobs         = self._activeJobs,
+      timeSliceScheduler = self._timeSliceScheduler,
+      logger             = self._logger,
+      clock              = now,
+    })
+
+    self._cleanupPhase = CleanupPhase.new({
+      hal                = self._hal,
+      machines           = self._machines,
+      machineTransposers = self._machineTransposers,
+      reports            = self._reports,
+      stats              = self._stats,
+      activeJobs         = self._activeJobs,
+      databaseAddr       = self._databaseAddr,
+      logger             = self._logger,
+      scheduler          = self._timeSliceScheduler,
+    })
   end
 
   return self
@@ -501,928 +552,6 @@ end
 -- If stable, converts to JobManifest and transitions to LOGGING.
 -- @return string  next phase (LOGGING or BUFFERING)
 --- Poll the central buffer via bufferFeeder and feed into snapshot.
--- Called from tick() when the poll throttle fires, NOT every tick.
--- @return boolean|nil  true if snapshot became stable, false if unstable, nil if skipped
-local function itemCount(items, input)
-  local count = 0
-  for _, item in ipairs(items or {}) do
-    if item.name == input.name and
-        (input.damage == nil or item.damage == input.damage) and
-        (input.nbt == nil or item.nbt == input.nbt) then
-      count = count + (item.size or item.amount or 0)
-    end
-  end
-  return count
-end
-
---- Request configured item deficits from the ME network on a bounded cadence.
---- A request is considered unfulfilled until a later check observes enough stock.
---- After three unfulfilled requests for one item, stop requesting it until stock arrives.
--- @param bufferData table  ME contents returned by the buffer feeder
-function ExecBroker:_checkAutoCrafting(bufferData)
-  if not self._enableAutoCrafting or self._meControllerAddr == "" then return end
-
-  self._autoCraftPollCount = self._autoCraftPollCount + 1
-  if self._autoCraftPollCount % 5 ~= 0 then return end
-
-  for _, input in ipairs(self._autoCraftInputs) do
-    local target = tonumber(input.amount or input.size)
-    if type(input.name) == "string" and input.name ~= "" and target and target > 0 then
-      local key = input.name
-      local available = itemCount(bufferData.items, input)
-      if available >= target then
-        self._autoCraftFailures[key] = nil
-        self._autoCraftCircuits[key] = nil
-      elseif not self._autoCraftCircuits[key] then
-        local filter = { name = input.name, damage = input.damage, nbt = input.nbt }
-        local requested, err = self._hal:requestCraft(self._meControllerAddr, filter, target - available)
-        local failures = (self._autoCraftFailures[key] or 0) + 1
-        self._autoCraftFailures[key] = failures
-        if failures >= 3 then
-          self._autoCraftCircuits[key] = true
-          if self._logger then
-            self._logger:warn("AUTO_CRAFT: circuit open for " .. input.name)
-          end
-        elseif not requested and self._logger then
-          self._logger:warn("AUTO_CRAFT: request failed for " .. input.name .. ": " .. tostring(err))
-        end
-      end
-    end
-  end
-end
-
-function ExecBroker:_pollBuffer()
-  if not self._bufferFeeder then return nil end
-  local bufferData = self._bufferFeeder()
-  if type(bufferData) ~= "table" then
-    if self._logger then self._logger:warn("BUFFERING: bufferFeeder returned non-table: " .. type(bufferData)) end
-    return nil
-  end
-  self:_checkAutoCrafting(bufferData)
-  return self._snapshot:update(bufferData)
-end
-
---- Execute the BUFFERING phase.
--- Uses pre-computed poll result from throttled _pollBuffer() call in tick().
--- When no poll ran this tick, just returns BUFFERING to wait for next throttled poll.
--- @param pollResult  boolean|nil  result from _pollBuffer() (nil = no poll this tick)
--- @return string  next phase (LOGGING or BUFFERING)
-function ExecBroker:_phaseBUFFERING(pollResult)
-  if not self._bufferFeeder then
-    if self._logger then self._logger:warn("BUFFERING: no bufferFeeder configured") end
-    return ExecBroker.PHASES.BUFFERING
-  end
-
-  -- No poll this tick — wait for throttle
-  if pollResult == nil then
-    return ExecBroker.PHASES.BUFFERING
-  end
-
-  --if self._logger then self._logger:info("BUFFERING: snapshot stable=" .. tostring(pollResult)) end
-
-  if not pollResult then
-    -- Still waiting for stability; yield and try again
-    --if self._logger then self._logger:info("BUFFERING: snapshot not stable, waiting") end
-    return ExecBroker.PHASES.BUFFERING
-  end
-
-  -- Check if there's actually data in the stable snapshot
-  local snapData = self._snapshot:getSnapshotData()
-  if not snapData then
-    if self._logger then self._logger:warn("BUFFERING: snapshot has no data") end
-    return ExecBroker.PHASES.BUFFERING
-  end
-
-  local hasItems = (snapData.items and #snapData.items > 0)
-  local hasFluids = (snapData.fluids and #snapData.fluids > 0)
-  if self._logger then self._logger:info("BUFFERING: hasItems=" .. tostring(hasItems) .. ", hasFluids=" .. tostring(hasFluids)) end
-  if not hasItems and not hasFluids then
-    -- Stable but empty — nothing to process; reset and wait
-    if self._logger then self._logger:info("BUFFERING: snapshot is empty, resetting") end
-    self._snapshot:reset()
-    return ExecBroker.PHASES.BUFFERING
-  end
-
-  -- Stable with data — transition to LOGGING
-  if self._logger then self._logger:info("BUFFERING: snapshot is stable with data, transitioning to LOGGING") end
-  return ExecBroker.PHASES.LOGGING
-end
-
--- ===========================================================================
--- Phase 2: LOGGING — Convert snapshot to JobManifest and queue
--- ===========================================================================
-
---- Execute the LOGGING phase.
--- Converts the stable snapshot into a JobManifest and pushes to queue.
--- @return string  next phase (ALLOCATING or BUFFERING)
-function ExecBroker:_phaseLOGGING()
-  -- Convert stable snapshot to manifest
-  local manifest = self._snapshot:convertToManifest(0)
-
-  if not manifest then
-    -- Snapshot became unstable or lost data; go back
-    return ExecBroker.PHASES.BUFFERING
-  end
-
-  -- Log the job creation
-  local job = self._M.JobManifest.new(manifest.id, manifest.inputs)
-  job.priority = manifest.priority or 0
-  job.status   = "PENDING"
-  job.createdAt = manifest.createdAt or os.time()
-  job.updatedAt = manifest.updatedAt or os.time()
-
-  -- Push to queue
-  local pushed = self._queue:push(job)
-  if not pushed then
-    -- Queue full — log a warning and retry later
-    return ExecBroker.PHASES.LOGGING
-  end
-
-  -- Reset snapshot for next buffering cycle
-  self._snapshot:reset()
-
-  -- Move to allocator phase
-  return ExecBroker.PHASES.ALLOCATING
-end
-
--- ===========================================================================
--- Phase 3: ALLOCATING — Find available machine, lock & bind
--- ===========================================================================
-
---- Execute the ALLOCATING phase.
--- Pops next available job from queue, finds an available machine,
--- locks it, and binds the job.
--- @return string  next phase (TRANSFERRING, ALLOCATING, or BUFFERING)
-function ExecBroker:_phaseALLOCATING()
-  -- Don't start a new transfer while one is already using the Database
-  for _, active in pairs(self._activeJobs) do
-    if active.phase == ExecBroker.PHASES.TRANSFERRING then
-      return ExecBroker.PHASES.ALLOCATING  -- wait, try again next tick
-    end
-  end
-
-  -- Pop next available job from queue
-  local job = self._queue:popNextAvailable()
-  if not job then
-    -- No jobs pending — go back to buffering
-    return ExecBroker.PHASES.BUFFERING
-  end
-
-  -- Find an available machine
-  local target = nil
-  for _, entry in ipairs(self._machineList) do
-    if entry.node:isAvailable() and not self._activeJobs[entry.laneId] then
-      target = entry
-      break
-    end
-  end
-
-  if not target then
-    -- No machines available — push job back (re-queue)
-    job.status = "PENDING"
-    self._queue:push(job)
-    -- Stay in ALLOCATING to retry next tick
-    return ExecBroker.PHASES.ALLOCATING
-  end
-
-  -- Lock the machine
-  local locked = target.node:lock()
-  if not locked then
-    -- Race condition — machine became unavailable
-    job.status = "PENDING"
-    self._queue:push(job)
-    return ExecBroker.PHASES.ALLOCATING
-  end
-
-  -- Bind job to machine (LOCKED → PROCESSING)
-  local bound = target.node:bindJob(job)
-  if not bound then
-    target.node:unlock()
-    job.status = "PENDING"
-    self._queue:push(job)
-    return ExecBroker.PHASES.ALLOCATING
-  end
-
-  -- Update manifest state directly (skip JobManifest transition validation
-  -- since the queue's DISPATCHED status is not a valid manifest state)
-  job.status = "ALLOCATING"
-  job.updatedAt = os.time()
-  job:bindHardware(target.address)
-  --job:bindHardware(target.laneId)
-
-  -- Track active job and perform transfer immediately (single-tick allocation)
-  --self._activeJobs[target.address] = {
-  self._activeJobs[target.laneId] = {
-    manifest    = job,
-    phase       = ExecBroker.PHASES.ALLOCATING,
-    assignedAt  = os.time(),
-  }
-
-  -- Perform transfer (multi-tick: store→stock→wait→pull→verify→clear)
-  --self:_transferForJob(target.address, self._activeJobs[target.address])
-  --[[self:_transferForJob(target.laneId, self._activeJobs[target.laneId])
-
-  --local activeJob = self._activeJobs[target.address]
-  local activeJob = self._activeJobs[target.laneId]
-  if activeJob.phase == ExecBroker.PHASES.CLEANUP then
-    return ExecBroker.PHASES.CLEANUP
-  elseif activeJob.phase == ExecBroker.PHASES.TRANSFERRING then
-    return ExecBroker.PHASES.TRANSFERRING
-  end]]--
-
-  --return ExecBroker.PHASES.PROCESSING
-  return ExecBroker.PHASES.TRANSFERRING
-end
-
--- ===========================================================================
--- Phase 4: TRANSFERRING — Move items from buffer to machine interface
--- ===========================================================================
-
---- Execute the TRANSFERRING phase for all active jobs.
--- Uses HAL to transfer items from the central buffer to each allocated
--- machine's ME interface. Transitions to PROCESSING once all transfers complete.
--- @return string  next phase (PROCESSING or TRANSFERRING)
-function ExecBroker:_phaseTRANSFERRING()
-  -- Promote ALLOCATING jobs before scheduling their lanes.
-  for laneId, active in pairs(self._activeJobs) do
-    if active.phase == ExecBroker.PHASES.ALLOCATING then
-      active.phase = ExecBroker.PHASES.TRANSFERRING
-    end
-  end
-
-  -- Each lane is either serviced once cooperatively or by its one tracked
-  -- framework coroutine.  A missing registry deliberately retains legacy,
-  -- tick-driven behavior.
-  for laneId, active in pairs(self._activeJobs) do
-    if active.phase == ExecBroker.PHASES.TRANSFERRING then
-      if self:_transferTimedOut(laneId, active) then
-        -- The timeout handler faults and advances the lane to CLEANUP.
-      elseif not self:_scheduleTransferLane(laneId, active) then
-        self:_transferForJob(laneId, active)
-      end
-    end
-  end
-
-  for _, active in pairs(self._activeJobs) do
-    if active.phase == ExecBroker.PHASES.TRANSFERRING or
-       active.phase == ExecBroker.PHASES.ALLOCATING then
-      return ExecBroker.PHASES.TRANSFERRING
-    end
-  end
-  return ExecBroker.PHASES.ALLOCATING
-end
-
---- Attach a framework thread registry after construction.
--- The launcher calls this before framework:start(); tests and embedders may
--- inject the registry directly through ExecBroker.new instead.
-function ExecBroker:setThreadRegistry(threadRegistry)
-  self._threadRegistry = threadRegistry
-end
-
---- Fault a transfer while retaining the lane lock until normal cleanup.
-function ExecBroker:_faultTransfer(laneId, active, message)
-  if active.phase ~= ExecBroker.PHASES.TRANSFERRING then return end
-  active.manifest:fault(message)
-  active.phase = ExecBroker.PHASES.CLEANUP
-  active._transferThread = nil
-  if self._logger then self._logger:warn(message) end
-end
-
---- Guard every TRANSFERRING lane against a stuck coroutine or stalled registry.
-function ExecBroker:_transferTimedOut(laneId, active)
-  local startedAt = active._transferStartedAt
-  if not startedAt then
-    active._transferStartedAt = now()
-    return false
-  end
-  if now() - startedAt <= self._transferTimeout then return false end
-
-  self:_faultTransfer(laneId, active,
-    string.format("Transfer timed out after %ds for lane %s", self._transferTimeout, laneId))
-  return true
-end
-
---- Register exactly one coroutine per transferring lane.
--- Returns true only when framework scheduling owns this tick.  Registration
--- failures intentionally fall back to _transferForJob on the caller's tick.
-function ExecBroker:_scheduleTransferLane(laneId, active)
-  local registry = self._threadRegistry
-  if not self._useCoroutineTransfer or
-     type(registry) ~= "table" or
-     type(registry.registerThread) ~= "function" then
-    return false
-  end
-  if active._transferThread then return true end
-
-  local function runLane()
-    while self._activeJobs[laneId] == active and
-          active.phase == ExecBroker.PHASES.TRANSFERRING do
-      local ok, err = xpcall(function()
-        self:_transferForJob(laneId, active)
-      end, function(reason) return tostring(reason) end)
-      if not ok then
-        self:_faultTransfer(laneId, active,
-          "Transfer coroutine crashed for lane " .. laneId .. ": " .. tostring(err))
-        break
-      end
-      coroutine.yield()
-    end
-    active._transferThread = nil
-  end
-
-  local ok, threadOrErr = pcall(registry.registerThread, registry, runLane)
-  if not ok then
-    if self._logger then
-      self._logger:warn("Transfer thread registration failed for lane " .. laneId ..
-        "; using cooperative fallback: " .. tostring(threadOrErr))
-    end
-    return false
-  end
-  active._transferThread = threadOrErr or true
-  return true
-end
-
---- Transfer items for a specific job using Database + Dual Interface model.
--- Full pipeline per job:
---   1. JIT: Store manifest items/fluids in Database (max 9 slots, items only)
---   2. Configure Dual Interface to stock from Database
---   3. Wait for AE2 to deliver items to interface (multi-tick polling)
---   4. Transposer: Dual Interface → Machine Input Bus
---   5. Verify central buffer + interface are empty
---   6. Clear interface config + Database slots
---   7. → PROCESSING
--- Fluids: configure fluid export on interface (fire-and-forget, conduit auto-pulls)
--- @param addr    string  machine address (laneId)
--- @param active  table   active job entry
-function ExecBroker:_transferForJob(addr, active)
-  local manifest = active.manifest
-  --self._logger:info(string.format("TRANSFERRING FOR JOB: %s", manifest.id))
-  -- Transition manifest to TRANSFERRING
-  if manifest.status == "ALLOCATING" then
-    manifest:updateState("TRANSFERRING")
-    self._logger:info(string.format("TRANSFERRING FOR JOB: %s UPDATED TO TRANSFERRING", manifest.id))
-  end
-
-  -- Initialize transfer state on first tick
-  if active._transferStep == nil then
-    active._transferStep = "store"     -- steps: store → stock → wait → pull → verify → clear
-    active._transferTick = 0
-    active._transferDbSlots = { items = {}, fluids = {} }
-  end
-  active._transferStartedAt = active._transferStartedAt or now()
-
-  -- addr is the machine hardware address; resolve to laneId for config lookup
-  local laneId = addr
-  for _, entry in ipairs(self._machineList) do
-    if entry.address == addr then
-      laneId = entry.laneId
-      break
-    end
-  end
-  local laneCfg = self._machineTransposers[laneId]
-  if not laneCfg then
-    manifest:fault("No transposer config for lane " .. laneId)
-    self._logger:info(string.format("TRANSFERRING FOR JOB: %s FAULTED: No transposer config for lane %s", manifest.id, laneId))
-    active.phase = ExecBroker.PHASES.CLEANUP
-    return
-  end
-
-  local ifaceAddr = laneCfg.dualInterface
-  if not ifaceAddr or ifaceAddr == "" then
-    manifest:fault("No Dual Interface for lane " .. laneId)
-    self._logger:info(string.format("TRANSFERRING FOR JOB: %s FAULTED: No Dual Interface for lane %s", manifest.id, laneId))
-    active.phase = ExecBroker.PHASES.CLEANUP
-    return
-  end
-
-  -- Resolve transposer sides
-  local transposerAddr = laneCfg.transposerAddr
-  local ifaceSide  = laneCfg.pull
-  local inputSide  = laneCfg.push 
-  local returnSide = laneCfg.return_ 
-
-  if ifaceSide == nil or inputSide == nil then
-    manifest:fault("Cannot resolve transfer sides for lane " .. laneId)
-    self._logger:info(string.format("TRANSFERRING FOR JOB: %s FAULTED: Cannot resolve transfer sides for lane %s", manifest.id, laneId))
-    active.phase = ExecBroker.PHASES.CLEANUP
-    return
-  end
-
-  local dbAddr = self._databaseAddr
-  local hal = self._hal
-  local inputs = manifest.inputs
-
-  active._transferTick = active._transferTick + 1
-
-  -- =========================================================================
-  -- STEP: store — Write items/fluids to Database (shared sequential pool)
-  -- Both items and fluids use CommonNetworkAPI.store() which handles
-  -- zlib-BNBT → JSON NBT conversion correctly.
-  -- =========================================================================
-  if active._transferStep == "store" then
-    if dbAddr and dbAddr ~= "" then
-      local meAddr = self._meControllerAddr
-      local dbSlot = 1
-
-      -- Items: CommonNetworkAPI.store() for correct NBT encoding
-      if inputs.items then
-        for _, item in ipairs(inputs.items) do
-          if dbSlot > self._dbSlots then break end
-          local itemLabel = item.label or item.name or "unknown"
-          local filter = { name = item.name or "unknown", damage = item.damage or 0 }
-          local ok, err = hal:storeNetworkEntry(meAddr, filter, dbAddr, dbSlot)
-          if ok then
-            self._logger:info(string.format(
-              "TRANSFERRING FOR JOB: %s STORED %s IN DATABASE FOR LANE %s",
-              manifest.id, itemLabel, laneId))
-            table.insert(active._transferDbSlots.items, {
-              dbSlot    = dbSlot,
-              fluidDrop = nil,
-              name      = item.name,
-              label     = itemLabel,
-            })
-            dbSlot = dbSlot + 1
-          else
-            self._logger:info(string.format(
-              "TRANSFERRING FOR JOB: %s FAILED TO STORE %s IN DATABASE FOR LANE %s: %s",
-              manifest.id, item.name, laneId, tostring(err)))
-            manifest:fault("Failed to store item in Database for lane " .. laneId)
-            active.phase = ExecBroker.PHASES.CLEANUP
-            return
-          end
-        end
-      end
-
-      -- Fluids: CommonNetworkAPI.store() for correct NBT encoding
-      if inputs.fluids then
-        for _, fluid in ipairs(inputs.fluids) do
-          if dbSlot > self._dbSlots then break end
-          local fluidLabel = fluid.label or fluid.name or "unknown"
-          -- Filter by the discretized drop label ("drop of <fluid>")
-          local filter = { label = "drop of " .. fluidLabel }
-          local ok, err = hal:storeNetworkEntry(meAddr, filter, dbAddr, dbSlot)
-          if ok then
-            self._logger:info(string.format(
-              "TRANSFERRING FOR JOB: %s STORED %s IN DATABASE FOR LANE %s",
-              manifest.id, fluidLabel, laneId))
-            table.insert(active._transferDbSlots.items, {
-              dbSlot    = dbSlot,
-              fluidDrop = true,
-              name      = fluid.name,
-              label     = fluidLabel,
-            })
-            dbSlot = dbSlot + 1
-          else
-            self._logger:info(string.format(
-              "TRANSFERRING FOR JOB: %s FAILED TO STORE %s IN DATABASE FOR LANE %s: %s",
-              manifest.id, fluid.name, laneId, tostring(err)))
-            manifest:fault("Failed to store fluid in Database for lane " .. laneId)
-            active.phase = ExecBroker.PHASES.CLEANUP
-            return
-          end
-        end
-      end
-
-      self._logger:info(string.format(
-        "TRANSFERRING FOR JOB: %s STORED %d ITEMS/FLUIDS IN DATABASE",
-        manifest.id, #active._transferDbSlots.items))
-    end
-    active._transferStep = "stock"
-    -- fall through to stock on same tick
-  end
-
-  -- =========================================================================
-  -- STEP: stock — Configure Dual Interface from Database entries
-  -- slot.fluidDrop decides item-stock (nil) vs fluid-export (truthy).
-  -- =========================================================================
-  if active._transferStep == "stock" then
-    local fluidCount = 0  -- assign channel 0,1,2,3,4,5 per fluid
-    for _, slot in ipairs(active._transferDbSlots.items) do
-
-      if slot.fluidDrop then
-        if fluidCount >= 6 then break end  -- ponytail: cap at 6 sides
-        local ok, err = hal:configureFluidExport(
-          ifaceAddr,
-          fluidCount,   -- dynamic: 0 for 1st fluid, 1 for 2nd, etc.
-          dbAddr,
-          slot.dbSlot
-        )
-        slot.fluidSide = fluidCount  -- remember for clear step
-
-        if not ok then
-          manifest:fault("Fluid config failed: " .. tostring(err))
-          active.phase = ExecBroker.PHASES.CLEANUP
-          return
-        end
-        fluidCount = fluidCount + 1
-
-      else
-        local ok = hal:configureInterfaceStocking(
-          ifaceAddr,
-          slot.dbSlot,
-          dbAddr,
-          slot.dbSlot,
-          64
-        )
-
-        if not ok then
-          manifest:fault("Stock config failed")
-          active.phase = ExecBroker.PHASES.CLEANUP
-          return
-        end
-      end
-    end
-
-    active._transferStep = "wait"
-    return
-  end
-  -- =========================================================================
-  -- STEP: wait — Poll interface inventory until AE2 has stocked items
-  -- =========================================================================
-  if active._transferStep == "wait" then
-    if active._transferTick < 6 then
-      -- Give AE2 at least ~3 seconds (6 ticks at 0.5s pollInterval)
-      if self._logger then
-        self._logger:debug(string.format("TRANSFER: lane %s waiting for AE2 (tick %d)...", laneId, active._transferTick))
-      end
-      return
-    end
-
-    -- Check if interface has items
-    local stocked = true
-    if #active._transferDbSlots.items > 0 then
-      local ok, result = self._hal:checkInterfaceStocked(ifaceAddr, #active._transferDbSlots.items)
-      if self._logger then
-        self._logger:debug(string.format("TRANSFER: lane %s interface stocked: %s", laneId, ok))
-      end
-      stocked = ok
-    end
-
-    if stocked then
-      active._transferStep = "pull"
-      if self._logger then self._logger:info("TRANSFER: lane " .. laneId .. " AE2 stocked interface, pulling to input bus") end
-      -- fall through to pull on same tick
-    elseif active._transferTick > 20 then
-      -- Timeout (~10 seconds) — fault the job
-      manifest:fault("AE2 stocking timeout for lane " .. laneId)
-      active.phase = ExecBroker.PHASES.CLEANUP
-      return
-    else
-      return  -- keep waiting
-    end
-  end
-
-  -- =========================================================================
-  -- STEP: pull — Transposer: Dual Interface → Machine Input Bus
-  -- =========================================================================
-  if active._transferStep == "pull" then
-    -- Check if there are actually items scheduled for this lane
-    if active._transferDbSlots and active._transferDbSlots.items and #active._transferDbSlots.items > 0 then
-      -- Execute the pull
-      local contents = hal:getInventoryContents(transposerAddr, ifaceSide)
-      if contents then
-        local moved = hal:drainInventory(transposerAddr, ifaceSide, inputSide)
-        self._logger:info(string.format("TRANSFER: lane %s iface→input moved %s items", laneId, tostring(moved)))
-        if moved and moved > 0 then
-          active._lastMoved = moved
-          active._transferAttempts = nil
-        else
-          active._transferAttempts = (active._transferAttempts or 0) + 1
-          if active._transferAttempts >= 3 then
-            local message = string.format(
-              "TRANSFER: lane %s moved zero items after %d attempts; faulting job",
-              laneId, active._transferAttempts)
-            manifest:fault(message)
-            active.phase = ExecBroker.PHASES.CLEANUP
-            if self._logger then self._logger:warn(message) end
-          end
-          -- Keep the pull step for the next broker tick.  This is deliberately
-          -- tick-driven rather than HAL:transferWithRetry's sleeping retry loop.
-          return
-        end
-      end
-    end
-
-    -- Yield this tick and verify on the next
-    active._transferStep = "verify"
-    return
-  end
-  -- =========================================================================
-  -- STEP: verify — Check interface is empty (all items moved to input bus)
-  -- =========================================================================
-  if active._transferStep == "verify" then
-    
-    if active._lastMoved and active._lastMoved > 0 then
-      if self._logger then 
-        self._logger:info("TRANSFER: lane " .. laneId .. " transfer complete, advancing to clear") 
-      end
-      
-      -- Transfer successful! Clean up and move to the next phase
-      active._lastMoved = nil 
-      active._transferStep = "clear"
-      return
-      
-    else
-      -- 0 items moved. Interface was empty, starved, or jammed.
-      if self._logger then 
-        self._logger:warn("TRANSFER: lane " .. laneId .. " zero items moved during pull. Advancing to clear.") 
-      end
-      
-      -- Decide how your system handles a dry pull here. 
-      -- Advancing to "clear" prevents the system from hanging forever.
-      active._lastMoved = nil
-      active._transferStep = "clear" 
-      return
-    end
-  end
-
-  -- =========================================================================
-  -- STEP: clear — Clear interface config + Database slots, then → PROCESSING
-  -- =========================================================================
-  if active._transferStep == "clear" then
-    -- Clear interface config and fluid export per tracked slot
-    for _, slot in ipairs(active._transferDbSlots.items) do
-      if slot.fluidDrop then
-        hal:clearFluidExport(ifaceAddr, slot.fluidSide or 0)
-      else
-        hal:clearInterfaceSlot(ifaceAddr, slot.dbSlot)
-      end
-    end
-    -- Clear Database slots
-    if dbAddr and dbAddr ~= "" then
-      for _, slot in ipairs(active._transferDbSlots.items) do
-        hal:clearDatabaseSlot(dbAddr, slot.dbSlot)
-      end
-    end
-    if self._logger then
-      self._logger:info(string.format("TRANSFER: lane %s complete — iface+DB cleared, → PROCESSING", laneId))
-    end
-    
-    -- Pulse redstone lock to signal lane is free for next job
-    if self._redstoneLockAddr and self._redstoneLockAddr ~= "" then
-      local ok, err = self._hal:pulseRedstoneLock(self._redstoneLockAddr, self._redstoneLockSide, 0.1)
-      if not ok then
-        self._logger:warn(string.format("TRANSFER: lane %s redstone pulse failed: %s", laneId, tostring(err)))
-      else
-        self._logger:info(string.format("TRANSFER: lane %s redstone pulse successful", laneId))
-      end
-    end
-    manifest:updateState("PROCESSING")
-    active.phase = ExecBroker.PHASES.PROCESSING
-  end
-end
--- ===========================================================================
--- Phase 5: PROCESSING — Monitor machine until job completes
--- ===========================================================================
-
---- Execute the PROCESSING phase for all active jobs.
--- Polls hardware, detects completion and faults.
--- @return string  next phase (CLEANUP, PROCESSING, or ALLOCATING)
-function ExecBroker:_phasePROCESSING()
-  for laneId, active in pairs(self._activeJobs) do
-    if self._timeSliceScheduler and self._timeSliceScheduler:remaining() <= 0 then
-      break
-    end
-    if active.phase == ExecBroker.PHASES.PROCESSING then
-      self:_checkProcessingJob(laneId, active)
-    end
-  end
-end
-
-
---- Check the progress of a single processing job.
--- Returns "still_processing", "cleanup", or "fault".
--- @param addr    string  machine address
--- @param active  table   active job entry
--- @return string  status
-function ExecBroker:_checkProcessingJob(laneId, active)
-  --local machine = self._machines[addr]
-  local machine = self._machines[laneId]
-  if not machine then
-    if self._logger then
-      self._logger:error("PROCESSING: lane " .. laneId .. " machine node missing — faulting job " .. active.manifest.id)
-    end
-    active.manifest:fault("Machine node missing for " .. laneId)
-    active.phase = ExecBroker.PHASES.CLEANUP
-    return "fault"
-  end
-
-  local manifest = active.manifest
-
-  -- Poll hardware status via HAL
-  local pollStatus = self._hal:pollMachineHardware(machine)
-
-  -- Check for faults detected by MachineNode
-  if machine:hasFault() then
-    local flags = machine.maintenanceFlags
-    if self._logger then
-      self._logger:warn("PROCESSING: lane " .. laneId .. " machine fault: " .. (flags.description or "unknown"))
-    end
-    --self._reports[addr]:reportFault(flags.code, flags.description)
-    self._reports[laneId]:reportFault(flags.code, flags.description)
-    manifest:fault("Machine fault: " .. (flags.description or "unknown"))
-    self._stats.jobsFaulted = self._stats.jobsFaulted + 1
-    active.phase = ExecBroker.PHASES.CLEANUP
-    return "fault"
-  end
-
-  -- Check if machine is still active (has work in progress)
-  -- In a real OC environment, we'd check getWorkProgress vs getWorkMaxProgress
-  -- For testing, use the MachineNode's internal state
-
-  -- Use maintenance check from HAL for comprehensive health
-  local laneCfg = self._machineTransposers[laneId]
-  if laneCfg then
-    local health = self._hal:checkMaintenanceState(machine, laneCfg.transposerAddr, laneCfg.pull)
-    local report = self._reports[laneId]
-    if health and report then
-      for _, advisory in ipairs(health.advisories or {}) do
-        report:reportAdvisory(advisory.code, advisory.description)
-      end
-    end
-    if health and health.faulted then
-      if self._logger then
-        self._logger:warn("PROCESSING: lane " .. laneId .. " health check found " .. tostring(#health.faults) .. " faults")
-      end
-      local hasBlockingFault = false
-      for _, fault in ipairs(health.faults) do
-        if fault.advisory then
-          if report then report:reportAdvisory(fault.code, fault.description) end
-        else
-          hasBlockingFault = true
-          if report then report:reportFault(fault.code, fault.description) end
-        end
-      end
-      -- Sensor maintenance is reported but intentionally does not block job
-      -- execution or future allocation during this trial.
-      if hasBlockingFault then
-        manifest:fault("Health check failed")
-        self._stats.jobsFaulted = self._stats.jobsFaulted + 1
-        active.phase = ExecBroker.PHASES.CLEANUP
-        return "fault"
-      end
-    end
-  end
-  if self._logger then
-    self._logger:info(string.format("PROCESSING: lane %s is still processing (procTicks=%d, age=%d)",laneId, active._procTicks or 0, math.floor(manifest:age())))
-  end
-
-  -- Check for completion: use tick counting for sub-second resolution
-  -- (wall-clock age via os.time() doesn't advance in rapid tests)
-  active._procTicks = (active._procTicks or 0) + 1
-
-  -- Completion: machine inactive AND processing for >= 2 ticks (or age > 2s)
-  -- Use HAL:getProxy() to reach the GT machine component.
-  local isActive = true  -- default: active if no proxy available at all
-  local proxy, proxyErr = self._hal:getProxy(machine.hardwareAddress)
-  if not proxy then
-    if self._logger then
-      self._logger:warn("PROCESSING: lane " .. laneId .. " HAL:getProxy failed: " .. tostring(proxyErr))
-    end
-    manifest:fault("Machine proxy error: " .. tostring(proxyErr))
-    self._stats.jobsFaulted = self._stats.jobsFaulted + 1
-    active.phase = ExecBroker.PHASES.CLEANUP
-    return "fault"
-  end
-  if proxy and proxy.isMachineActive then
-    isActive = proxy.isMachineActive()
-  end
-
-  if self._logger then
-    self._logger:info(string.format("PROCESSING: lane %s proxy=%s isActive=%s procTicks=%d age=%d",
-      laneId, proxy and "yes" or "nil", tostring(isActive), active._procTicks, math.floor(manifest:age())))
-  end
-
-  if not isActive and (active._procTicks >= 2 or math.floor(manifest:age()) > 2) then
-    if self._logger then
-      self._logger:info("PROCESSING: lane " .. laneId .. " job " .. manifest.id .. " complete → CLEANUP")
-    end
-    manifest:updateState("CLEANUP")
-    active.phase = ExecBroker.PHASES.CLEANUP
-    return "cleanup"
-  end
-
-  -- Check stale timeout
-  if manifest:isStale() then
-    if self._logger then
-      self._logger:warn("PROCESSING: lane " .. laneId .. " job " .. manifest.id .. " timed out (stale)")
-    end
-    manifest:fault("Processing timed out (stale)")
-    self._stats.jobsFaulted = self._stats.jobsFaulted + 1
-    active.phase = ExecBroker.PHASES.CLEANUP
-    return "fault"
-  end
-
-  return "still_processing"
-end
--- ===========================================================================
--- Phase 6: CLEANUP — Flush interfaces, release machines, transmit
--- ===========================================================================
-
---- Execute the CLEANUP phase for completed/faulted jobs.
--- Flushes ME interface, releases machine, updates stats.
--- @return string  next phase (BUFFERING or ALLOCATING)
-function ExecBroker:_phaseCLEANUP()
-  local cleaned = {}
-
-  for laneId, active in pairs(self._activeJobs) do
-    if active.phase == ExecBroker.PHASES.CLEANUP then
-      self:_cleanupJob(laneId, active)
-      table.insert(cleaned, laneId)
-    end
-  end
-
-  -- Remove cleaned jobs from active set
-  for _, laneId in ipairs(cleaned) do
-    self._activeJobs[laneId] = nil
-  end
-
-  if self._logger and #cleaned > 0 then
-    self._logger:info(string.format("CLEANUP: released %d lanes", #cleaned))
-  end
-
-  -- ponytail: back-end runs every tick; return value is ignored
-end
-
---- Clean up a single job: extract leftovers, release machine, update stats.
--- Interface and Database clearing are handled in TRANSFERRING phase.
--- @param addr    string  machine address
--- @param active  table   active job entry
-function ExecBroker:_cleanupJob(laneId, active)
-  local machine = self._machines[laneId]
-  local manifest = active.manifest
-
-  -- 1. Extract leftover items from Machine Input Bus → Return Chest
-  local laneCfg = self._machineTransposers[laneId]
-  if laneCfg and laneCfg.transposerAddr and laneCfg.push and laneCfg.return_ then
-    local leftover = self._hal:drainInventory(laneCfg.transposerAddr, laneCfg.push, laneCfg.return_)
-    if leftover and leftover > 0 then
-      if self._logger then
-        self._logger:info(string.format(
-          "CLEANUP: lane %s pulled %d leftover items from input bus to return chest",
-          laneId, leftover))
-      end
-    end
-  elseif self._logger then
-    self._logger:debug("CLEANUP: lane " .. laneId .. " no transposer config, skipping drain")
-  end
-
-  -- 2. Release the machine
-  if machine then
-    local released = machine:releaseJob()
-    if not released then
-      if machine:hasFault() then
-        if self._logger then
-          self._logger:warn("CLEANUP: lane " .. laneId .. " releaseJob failed (faulted), clearing fault")
-        end
-        machine:clearFault()
-      elseif self._logger then
-        self._logger:warn("CLEANUP: lane " .. laneId .. " releaseJob failed (unexpected state)")
-      end
-    end
-  end
-
-  -- 3. Unbind hardware from manifest
-  manifest:unbindHardware()
-
-  -- 4. Update stats
-  if manifest.status == "CLEANUP" then
-    manifest:updateState("COMPLETED")
-    self._stats.jobsCompleted = self._stats.jobsCompleted + 1
-    self._stats.totalJobTime = self._stats.totalJobTime + math.floor(manifest:age())
-    if self._logger then
-      self._logger:info(string.format(
-        "CLEANUP: lane %s job %s COMPLETED (age=%ds)",
-        laneId, manifest.id, math.floor(manifest:age())))
-    end
-    -- Release JIT tables while keeping COMPLETED status for diagnostics
-    manifest._inputRegistry = nil
-    manifest._hardwareBinds = nil
-    manifest._transferPlan = nil
-    manifest._processingLog = nil
-    manifest._errorLog = nil
-  elseif manifest.status == "FAULTED" then
-    self._stats.jobsFaulted = self._stats.jobsFaulted + 1
-    self._stats.totalJobTime = self._stats.totalJobTime + math.floor(manifest:age())
-    if self._logger then
-      self._logger:warn(string.format(
-        "CLEANUP: lane %s job %s FAULTED: %s",
-        laneId, manifest.id, manifest.faultReason or "unknown"))
-    end
-  end
-
-  -- 5. Log to maintenance report
-  local report = self._reports[laneId]
-  if report then
-    if not manifest.faultReason then
-      report:clearFault("Job " .. manifest.id .. " completed successfully")
-    end
-  end
-
-  -- 6. Nil manifest reference for GC
-  active.manifest = nil
-end
-
 -- ===========================================================================
 -- Telemetry
 -- ===========================================================================
@@ -1431,31 +560,19 @@ end
 -- Fire-and-forget: never waits for a response.
 -- Uses snapshot of current broker state.
 function ExecBroker:_transmitTelemetry()
-  local scheduler = self._timeSliceScheduler
-  local hwMatrix = scheduler and self._telemetryMatrix or {}
-  local cursor = scheduler and self._telemetryCursor or 1
+  local hwMatrix = {}
 
-  while cursor <= #self._machineList do
-    if scheduler and scheduler:remaining() <= 0 then
-      break
-    end
-    local entry = self._machineList[cursor]
+  self._timeSliceScheduler:forEach(self._machineList, function(entry)
     if entry.node and type(entry.node.toTelemetry) == "function" then
       hwMatrix[entry.laneId] = entry.node:toTelemetry()
     else
-      -- Fallback: emit bare identity data so telemetry still fires
       hwMatrix[entry.laneId] = {
         laneId  = entry.laneId,
         address = entry.address,
         status  = "unknown",
       }
     end
-    cursor = cursor + 1
-  end
-
-  if scheduler then
-    self._telemetryCursor = cursor > #self._machineList and 1 or cursor
-  end
+  end)
 
   -- Collect alerts from all maintenance reports
   local alerts = {}
@@ -1492,6 +609,33 @@ end
 -- ===========================================================================
 -- Main event loop
 -- ===========================================================================
+
+--- Compute the earliest time any processing machine is likely to complete.
+-- Used by the intake backoff gate when allocating is stuck.
+-- Returns nil when there are no processing jobs — nothing to wait for,
+-- so keep polling in case a machine heals or becomes available.
+-- @param now  number  current clock value
+-- @return number|nil  timestamp after which to re-check, or nil for no backoff
+function ExecBroker:_computeIntakeBackoff(now)
+  local P = ExecBroker.PHASES
+  local earliest = nil
+
+  for _, active in pairs(self._activeJobs) do
+    if active.phase == P.PROCESSING then
+      if active._wakeTime and active._wakeTime > 0 then
+        if not earliest or active._wakeTime < earliest then
+          earliest = active._wakeTime
+        end
+      else
+        -- Processing but no wakeTime (fallback polling) — short wait
+        return now + 5
+      end
+    end
+  end
+
+  -- nil means no processing jobs — don't back off, keep polling
+  return earliest
+end
 
 local PERSISTENCE_SCHEMA_VERSION = 1
 
@@ -1623,38 +767,40 @@ function ExecBroker:tick()
   -- The broker never asks the scheduler to sleep: when the framework is
   -- enabled it remains the only event.pull owner.  The scheduler is used only
   -- as a per-tick budget for real hot loops below.
-  if self._timeSliceScheduler then
-    self._timeSliceScheduler:reset()
-  end
+  self._timeSliceScheduler:reset()
 
-  -- Throttled buffer poll (not every tick — respects pollInterval)
+  -- Throttled buffer poll via the buffering phase module
   local cur = now()
   local pollResult = nil
   if cur - self._lastPollTime >= self._pollInterval then
     self._lastPollTime = cur
-    pollResult = self:_pollBuffer()
+    pollResult = self._bufferingPhase:pollBuffer()
   end
 
-  -- Async back-end: service any jobs past TRANSFERRING every tick,
-  -- independent of what the front-end pipeline (self._phase) is doing.
-  self:_phasePROCESSING()
-  self:_phaseCLEANUP()
+  -- Back-end: service processing and cleanup every tick via phase modules.
+  local P = ExecBroker.PHASES
+  self._processingPhase:execute(P)
+  self._cleanupPhase:execute(P)
 
-  -- Serialized front-end intake pipeline. The shared state machine is opt-in
-  -- until its behavior has soaked alongside the legacy dispatcher.
+  -- Front-end intake pipeline via phase modules
   local nextPhase = self._phase
-  if self._stateMachine then
-    nextPhase = self._stateMachine:update(pollResult)
-  else
-    if self._phase == ExecBroker.PHASES.BUFFERING then
-      nextPhase = self:_phaseBUFFERING(pollResult)
-    elseif self._phase == ExecBroker.PHASES.LOGGING then
-      nextPhase = self:_phaseLOGGING()
-    elseif self._phase == ExecBroker.PHASES.ALLOCATING then
-      nextPhase = self:_phaseALLOCATING()
-    elseif self._phase == ExecBroker.PHASES.TRANSFERRING then
-      nextPhase = self:_phaseTRANSFERRING()
-    end
+
+  -- Intake backoff: when all machines are busy or unhealthy, sleep the
+  -- intake pipeline until the earliest processing machine is likely done.
+  -- Processing + cleanup always run — they're what frees up machines.
+  if self._intakeBackoff and cur < self._intakeBackoff then
+    goto intake_skipped
+  end
+  self._intakeBackoff = nil
+
+  if self._phase == P.BUFFERING then
+    nextPhase = self._bufferingPhase:execute(pollResult, P)
+  elseif self._phase == P.LOGGING then
+    nextPhase = self._loggingPhase:execute(P)
+  elseif self._phase == P.ALLOCATING then
+    nextPhase = self._allocatingPhase:execute(P)
+  elseif self._phase == P.TRANSFERRING then
+    nextPhase = self._transferringPhase:execute(P)
   end
 
   -- Record phase transition
@@ -1665,6 +811,19 @@ function ExecBroker:tick()
     self._phase = nextPhase
     self._stats.cycles = self._stats.cycles + 1
   end
+
+  -- When stuck in ALLOCATING (no healthy machine), back off the intake
+  -- pipeline until the earliest processing machine is likely done.
+  -- If there are no processing jobs (nil), keep polling — a machine
+  -- could heal or become available at any moment.
+  if self._phase == P.ALLOCATING and nextPhase == P.ALLOCATING then
+    self._intakeBackoff = self:_computeIntakeBackoff(cur)
+  end
+
+  ::intake_skipped::
+
+  -- Drain deferred tasks (transfer sub-pipeline steps, etc.)
+  self._timeSliceScheduler:processQueue()
 
   -- Telemetry broadcast (throttled by heartbeatInterval)
   local timeSinceHeartbeat = cur - self._lastHeartbeat

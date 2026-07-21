@@ -27,6 +27,8 @@ function MockModules.MachineNode.new(address, opts)
   self.id = opts.id or ("job_" .. address)
   self._cachedProgress = 0
   self._lastPollTime = 0
+  self._healthScore  = 100       -- for quickHealthCheck
+  self._healthIssues = {}        -- for quickHealthCheck
   -- hardwareAddress for HAL:getProxy() compatibility
   self.hardwareAddress = address
   self.machineType = opts.machineType or "gt_machine"
@@ -84,6 +86,15 @@ end
 function MockModules.MachineNode:updateHardwareState(progress)
   self._cachedProgress = progress or 0
   self._lastPollTime = os.time()
+end
+
+function MockModules.MachineNode:updateHealth(sensorLines)
+  self._healthScore  = 100
+  self._healthIssues = {}
+end
+
+function MockModules.MachineNode:isHealthy()
+  return (self._healthScore or 100) >= 80
 end
 
 function MockModules.MachineNode:recordFault(code, description)
@@ -344,6 +355,15 @@ function MockModules.HAL:checkMaintenanceState(machine, transposerAddr, ifaceSid
     incompleteStructure = false,
     powerLossShutdown = false,
   }
+end
+
+--- Lightweight pre-allocation health probe used by smart dispatch.
+-- Delegates to the machine node's health state.
+function MockModules.HAL:quickHealthCheck(node)
+  if node._healthScore then
+    return { ok = node._healthScore >= 80, healthScore = node._healthScore, issues = node._healthIssues or {} }
+  end
+  return { ok = true, healthScore = 100, issues = {} }
 end
 
 function MockModules.HAL:setRedstone(side, value)

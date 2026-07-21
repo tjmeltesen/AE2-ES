@@ -36,11 +36,11 @@ local EVENT_NAMES = {
 local LogEntry, LogRingBuffer
 local function _ensureModules()
   if not LogEntry then
-    local ok, mod = pcall(require, "src.log_entry")
+    local ok, mod = pcall(require, "lib.log_entry")
     if ok then LogEntry = mod end
   end
   if not LogRingBuffer then
-    local ok, mod = pcall(require, "src.log_ring_buffer")
+    local ok, mod = pcall(require, "lib.log_ring_buffer")
     if ok then LogRingBuffer = mod end
   end
 end

@@ -16,7 +16,7 @@
 --   healthCheckInterval, ttdThresholds, dashboardLayout, brokerRegistry
 --
 -- Dependencies:
---   src/ui/common.lua — Shared UI widget library
+--   lib/ui_common.lua — Shared UI widget library
 --   component, event, serialization — OpenComputers APIs
 --   filesystem — OC file I/O
 --
@@ -45,7 +45,7 @@ local ok_s, _ = pcall(function() serialization = require("serialization") end)
 if not ok_s or not serialization then
     serialization = _G.serialization or {}
 end
-local UI = require("src.ui.common")
+local UI = require("lib.ui_common")
 
 --=============================================================================
 -- Constants

@@ -7,7 +7,7 @@ local function buildControlHandler(config, broker)
 
   local component = require("component")
   local digest = component.data and component.data.sha256
-  local Orchestrator = require("supervisor.orchestrator")
+  local Orchestrator = require("lib.orchestrator")
   return Orchestrator.new({
     id = tostring(config.brokerId),
     enabled = true,
@@ -28,7 +28,7 @@ local function buildControlHandler(config, broker)
   })
 end
 
-local configUI = ConfigUI.new()
+local configUI = ConfigUI.new("/home/ae2es_broker.cfg")
 local config, loadErr = configUI:loadConfig()
 
 if not config then

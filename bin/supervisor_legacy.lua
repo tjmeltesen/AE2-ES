@@ -5,7 +5,7 @@ local Supervisor = require("src.supervisor").Supervisor
 local function buildControlHandler(config, supervisor)
   if config.enableRemoteControl ~= true then return nil end
   local component = require("component")
-  local Orchestrator = require("supervisor.orchestrator")
+  local Orchestrator = require("lib.orchestrator")
   return Orchestrator.new({
     id = config.supervisorId or "supervisor",
     enabled = true,

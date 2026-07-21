@@ -3,7 +3,7 @@
 -- Unit tests for supervisor/config_ui.lua
 -- Tier 1: Vanilla Lua 5.3, no OC runtime.
 -- Tests the ConfigUI class (construction, config I/O, data access) and the
--- shared UI library (src/ui/common.lua).
+-- shared UI library (lib/ui_common.lua).
 --
 -- Interactive elements (event.pull-based menus, dialogs) are NOT tested in
 -- this suite since they require a live terminal. Instead, we test the data
@@ -148,9 +148,9 @@ local UI
 local ConfigUI
 
 local ok_ui, err_ui = pcall(function()
-    UI = require("src.ui.common")
+    UI = require("lib.ui_common")
 end)
-assert_true(ok_ui, "Load src.ui.common: " .. tostring(err_ui))
+assert_true(ok_ui, "Load lib.ui_common: " .. tostring(err_ui))
 
 -- The ConfigUI module requires event, component - ensure they exist
 local ok_cui, err_cui = pcall(function()

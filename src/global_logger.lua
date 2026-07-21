@@ -23,8 +23,8 @@ Dependencies:
   - LogRingBuffer (src/log_ring_buffer.lua)
 --]]
 
-local LogEntry     = require("log_entry")
-local LogRingBuffer = require("log_ring_buffer")
+local LogEntry     = require("lib.log_entry")
+local LogRingBuffer = require("lib.log_ring_buffer")
 
 -- ============================================================================
 -- LogFilter — Filter log entries by severity, origin, or text search

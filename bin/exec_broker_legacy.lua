@@ -7,7 +7,7 @@ local function attachControl(config, broker)
   if config.enableRemoteControl ~= true then return function() end end
   if not config.modem then error("Remote control requires a configured modem") end
   local component = require("component")
-  local Orchestrator = require("supervisor.orchestrator")
+  local Orchestrator = require("lib.orchestrator")
   local control = Orchestrator.new({
     id = tostring(config.brokerId),
     enabled = true,

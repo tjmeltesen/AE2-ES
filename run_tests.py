@@ -106,6 +106,7 @@ test_files = [
     "tests.test_persistence",
     "tests.test_orchestrator_control",
     "tests.test_profiler",
+    "tests.test_phase_modules",
     "tests.unit.test_config_ui",
     "tests.unit.test_supervisor_config_ui",
 ]

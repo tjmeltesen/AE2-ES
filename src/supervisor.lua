@@ -10,7 +10,6 @@
 --   Exec Brokers broadcast serialized TelemetryPayload on port SUPERVISOR_PORT
 --   Supervisor never acknowledges (fire-and-forget per architectural constraint)
 
-local TelemetryPayload = require("src.telemetrypayload")
 local BoundedList = require("lib.bounded_list")
 
 local function safeRequire(name)
@@ -182,6 +181,7 @@ function Supervisor.new(config)
     _log = BoundedList.new(cfg.maxLogEntries),
     _logIndex = 0,
     _controlHandler = nil,
+    _telemetryPayload = config and config.telemetryPayload or safeRequire("src.telemetrypayload"),
   }, Supervisor)
 end
 
@@ -379,7 +379,7 @@ function Supervisor:_processMessage(from, port, payload)
   self._stats.lastMessageTime = uptime()
 
   -- Step 1: Deserialize
-  local telemetry, err = TelemetryPayload.deserialize(payload)
+  local telemetry, err = self._telemetryPayload.deserialize(payload)
   if not telemetry then
     self._stats.messagesInvalid = self._stats.messagesInvalid + 1
     self:_logMessage("WARN", string.format(
