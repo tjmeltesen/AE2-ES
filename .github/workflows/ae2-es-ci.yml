@@ -161,6 +161,12 @@ jobs:
           cp "$GITHUB_WORKSPACE/src/"*.lua "$MACHINE_DIR/home/src/" 2>/dev/null || true
           cp "$GITHUB_WORKSPACE/supervisor/"*.lua "$MACHINE_DIR/home/supervisor/" 2>/dev/null || true
           cp "$GITHUB_WORKSPACE/"*.lua "$MACHINE_DIR/home/" 2>/dev/null || true
+          # Copy lib/ modules (log_entry, log_ring_buffer, persistence, etc.)
+          #   home/lib/ — for home.lib.* requires from OCEmu test suite
+          #   lib/     — for lib.* requires from production code
+          mkdir -p "$MACHINE_DIR/home/lib"
+          cp "$GITHUB_WORKSPACE/lib/"*.lua "$MACHINE_DIR/home/lib/" 2>/dev/null || true
+          cp "$GITHUB_WORKSPACE/lib/"*.lua "$MACHINE_DIR/lib/" 2>/dev/null || true
           # Also copy stub/helper modules needed by exec_broker
           cp "$GITHUB_WORKSPACE/src/MachineNode.lua" "$MACHINE_DIR/" 2>/dev/null || true
           cp "$GITHUB_WORKSPACE/src/BufferSnapshot.lua" "$MACHINE_DIR/" 2>/dev/null || echo "WARN: BufferSnapshot missing from git"
