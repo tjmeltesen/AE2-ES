@@ -97,6 +97,14 @@ function MockModules.MachineNode:isHealthy()
   return (self._healthScore or 100) >= 80
 end
 
+function MockModules.MachineNode:getHealthScore()
+  return self._healthScore or 100
+end
+
+function MockModules.MachineNode:getHealthIssues()
+  return self._healthIssues or {}
+end
+
 function MockModules.MachineNode:recordFault(code, description)
   self._faulted = true
   self._faultCode = code or 0
